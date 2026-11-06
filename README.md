@@ -14,7 +14,7 @@ Interfaccia grafica con visualizzazione 2D/3D della regione ammissibile, animazi
 
 ---
 
-## Funzionalita
+## Funzionalità
 
 - **Metodo del Simplesso completo** con supporto a Due Fasi automatiche
 - **Qualsiasi tipo di vincolo**: `<=`, `>=`, `=`
