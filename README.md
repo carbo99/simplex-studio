@@ -17,7 +17,7 @@ Interfaccia grafica con visualizzazione 2D/3D della regione ammissibile, animazi
 ## Funzionalità
 
 - **Metodo del Simplesso completo** con supporto a Due Fasi automatiche
-- **Prevenzione del Ciclaggio (Regola di Bland)**: implementazione della regola dell'indice minimo per la variabile entrante e per lo spareggio della variabile uscente, garantendo la convergenza anche in presenza di basi degenerate, affiancata alla regola classica di Dantzig selezionabile dal pannello
+- **Regole di Pivot flessibili**: regola classica di **Dantzig** (massimo costo ridotto, default) per la massima corrispondenza con la risoluzione manuale a lezione, affiancata dalla **Regola di Bland** (anti-ciclo) selezionabile per garantire la convergenza matematica in caso di degenerazione estrema
 - **Qualsiasi tipo di vincolo**: `<=`, `>=`, `=`
 - **Termini noti negativi** gestiti in automatico (normalizzazione con inversione di segno)
 - **Interfaccia grafica** (Tkinter) con menu a tendina per configurare il problema

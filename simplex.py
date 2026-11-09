@@ -41,7 +41,7 @@ class SimplexSolver:
       • Variabili decisionali x ≥ 0
     """
 
-    def __init__(self, c, A, b, signs=None, var_names=None, use_fractions=True, pivot_rule='bland'):
+    def __init__(self, c, A, b, signs=None, var_names=None, use_fractions=True, pivot_rule='dantzig'):
         """
         Parametri
         ----------
@@ -51,14 +51,14 @@ class SimplexSolver:
         signs : lista di str    – segno di ogni vincolo ('<=', '>=', '=' o '≤', '≥')
         var_names : lista       – nomi delle variabili decisionali (default: x1, x2, ...)
         use_fractions : bool    – se True usa frazioni esatte per il display
-        pivot_rule : str        – regola di pivot: 'bland' (anti-ciclo, default) o 'dantzig'
+        pivot_rule : str        – regola di pivot: 'dantzig' (default classico) o 'bland' (anti-ciclo)
         """
         self.c_orig = np.array(c, dtype=float)
         self.A_orig = np.array(A, dtype=float)
         self.b_orig = np.array(b, dtype=float)
         self.m, self.n = self.A_orig.shape
         self.use_fractions = use_fractions
-        self.pivot_rule = pivot_rule.lower() if pivot_rule else 'bland'
+        self.pivot_rule = pivot_rule.lower() if pivot_rule else 'dantzig'
 
         # Salva segni originali per la visualizzazione geometrica
         if signs is None:

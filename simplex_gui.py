@@ -113,7 +113,7 @@ class SimplexGUI:
         self.n_vars = tk.IntVar(value=3)
         self.n_constr = tk.IntVar(value=3)
         self.obj_type = tk.StringVar(value='max')
-        self.pivot_rule = tk.StringVar(value='Bland (anti-ciclo)')
+        self.pivot_rule = tk.StringVar(value='Dantzig')
         self.speed_ms = tk.IntVar(value=1200)
         self.view_mode = tk.StringVar(value='original')  # 'original' o 'non_basic'
 
@@ -256,7 +256,7 @@ class SimplexGUI:
         tk.Label(cfg, text="Regola pivot:", font=FONT_UI, bg=COL['card']).grid(
             row=r, column=0, sticky='w', pady=2)
         rule_cb = ttk.Combobox(cfg, textvariable=self.pivot_rule,
-                               values=['Bland (anti-ciclo)', 'Dantzig'], width=15,
+                               values=['Dantzig', 'Bland (anti-ciclo)'], width=15,
                                state='readonly', font=FONT_UI)
         rule_cb.grid(row=r, column=1, sticky='w', padx=(8, 0), pady=2)
 
@@ -1247,7 +1247,7 @@ class SimplexGUI:
         self.solver = None
         self.current_step = 0
         self.total_steps = 0
-        self.pivot_rule.set('Bland (anti-ciclo)')
+        self.pivot_rule.set('Dantzig')
 
         # Ripristina tutti i coefficienti della funzione obiettivo a 0
         for e in self.obj_entries:
