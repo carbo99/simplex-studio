@@ -25,7 +25,7 @@ Interfaccia grafica con visualizzazione 2D/3D della regione ammissibile, animazi
 - **Doppia modalità di visualizzazione**: nello spazio delle **variabili originali** oppure nel sistema di riferimento delle **variabili fuori base (nuovi assi)** che si trasformano ad ogni cambio di base
 - **Animazione** del percorso del simplesso vertice per vertice
 - **Tableau interattivo** con evidenziazione del pivot e navigazione avanti/indietro
-- **Teoria della Dualità completa**: finestra dedicata con formulazione automatica del problema duale associato, verifica del Teorema della Dualità Forte ($z^* = w^*$), Prezzi Ombra ($y^*$), verifica interattiva delle Condizioni di Scarto Complementare e rappresentazione geometrica 2D/3D del poliedro duale
+- **Teoria della Dualità completa**: finestra dedicata con formulazione automatica del problema duale associato, verifica del Teorema della Dualità Forte ($z^\star = w^\star$), Prezzi Ombra ($y^\star$), verifica interattiva delle Condizioni di Scarto Complementare e rappresentazione geometrica 2D/3D del poliedro duale
 - **Esempi precaricati**:
   - `Esempio in R³` (problema 3D canonico)
   - `Esempio in R²` (vincoli misti $\le, \ge$ con Due Fasi)
@@ -47,10 +47,10 @@ SimplexStudio permette di osservare la convergenza dell'algoritmo sia nello spaz
 
 Cliccando sul pulsante **Analisi Duale**, SimplexStudio apre un modulo dedicato per esplorare in profondità la relazione tra problema primale e duale:
 - Formulazione automatica del **problema duale associato**
-- Verifica del **Teorema della Dualità Forte** ($z^* = w^*$)
-- Calcolo dei **Prezzi Ombra** $y^*$ (interpretazione economica della sensibilità)
+- Verifica del **Teorema della Dualità Forte** ($z^\star = w^\star$)
+- Calcolo dei **Prezzi Ombra** $y^\star$ (interpretazione economica della sensibilità)
 - Verifica interattiva delle condizioni del **Teorema degli Scarti Complementari** (*Complementary Slackness*)
-- Rendering 3D/2D del **Poliedro Duale** con animazione del percorso del vettore $y^{(k)}$ verso l'ottimo $y^*$
+- Rendering 3D/2D del **Poliedro Duale** con animazione del percorso del vettore $y^{(k)}$ verso l'ottimo $y^\star$
 
 | Formulazione & Scarti Complementari | Geometria del Poliedro Duale (3D) |
 |:---:|:---:|
