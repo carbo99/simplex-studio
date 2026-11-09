@@ -105,6 +105,14 @@ pip3 install numpy matplotlib scipy
 python3 simplex_gui.py
 ```
 
+### 5. Esegui i test automatici (opzionale)
+
+Per verificare la correttezza matematica del risolutore e la convergenza contro **SciPy**:
+
+```bash
+python3 test_simplex.py
+```
+
 ---
 
 ## Come si usa

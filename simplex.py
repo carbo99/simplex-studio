@@ -16,8 +16,9 @@ carboni.alessandro@outlook.it
 """
 
 import os
+import tempfile
 if 'MPLCONFIGDIR' not in os.environ:
-    os.environ['MPLCONFIGDIR'] = '/tmp/mpl'
+    os.environ['MPLCONFIGDIR'] = os.path.join(tempfile.gettempdir(), 'mpl')
 
 import numpy as np
 from fractions import Fraction
@@ -41,7 +42,7 @@ class SimplexSolver:
       • Variabili decisionali x ≥ 0
     """
 
-    def __init__(self, c, A, b, signs=None, var_names=None, use_fractions=True, pivot_rule='dantzig'):
+    def __init__(self, c, A, b, signs=None, var_names=None, use_fractions=True, pivot_rule='dantzig', is_min=False):
         """
         Parametri
         ----------
@@ -52,13 +53,16 @@ class SimplexSolver:
         var_names : lista       – nomi delle variabili decisionali (default: x1, x2, ...)
         use_fractions : bool    – se True usa frazioni esatte per il display
         pivot_rule : str        – regola di pivot: 'dantzig' (default classico) o 'bland' (anti-ciclo)
+        is_min : bool           – se True il problema originale era di minimizzazione
         """
+        self.is_min = is_min
         self.c_orig = np.array(c, dtype=float)
         self.A_orig = np.array(A, dtype=float)
         self.b_orig = np.array(b, dtype=float)
         self.m, self.n = self.A_orig.shape
         self.use_fractions = use_fractions
         self.pivot_rule = pivot_rule.lower() if pivot_rule else 'dantzig'
+        self.status = 'running'
 
         # Salva segni originali per la visualizzazione geometrica
         if signs is None:
@@ -242,12 +246,14 @@ class SimplexSolver:
         sol, z = self.get_basic_solution()
         return sol[:self.n], z
 
-    def _save_state(self, description, pivot_info=None, phase=2):
+    def _save_state(self, description, pivot_info=None, phase=2, status=None):
         sol, z = self.get_basic_solution()
         dec_vars, _ = self.get_decision_variables()
+        cur_status = status if status is not None else getattr(self, 'status', 'running')
         state = {
             'description': description,
             'phase': phase,
+            'status': cur_status,
             'obj_label': getattr(self, 'current_obj_label', '-z'),
             'tableau': self.tableau.copy(),
             'basis': self.basis.copy(),
@@ -422,9 +428,11 @@ class SimplexSolver:
             print("║           METODO DEL SIMPLESSO – Risolutore PL                 ║")
             print("╠══════════════════════════════════════════════════════════════════╣")
             print("║  Problema formulato:                                           ║")
-            obj_str = " + ".join(f"{self._format_val(self.c_orig[i])}·{self.var_names[i]}"
+            obj_label_text = "min" if getattr(self, 'is_min', False) else "max"
+            c_disp = -self.c_orig if getattr(self, 'is_min', False) else self.c_orig
+            obj_str = " + ".join(f"{self._format_val(c_disp[i])}·{self.var_names[i]}"
                                  for i in range(self.n))
-            print(f"║  max z = {obj_str}")
+            print(f"║  {obj_label_text} z = {obj_str}")
             print("║  s.t.")
             for i in range(self.m):
                 constr = " + ".join(f"{self._format_val(self.A_orig[i, j])}·{self.var_names[j]}"
@@ -464,6 +472,8 @@ class SimplexSolver:
                 if pivot_row == -1:
                     if verbose:
                         print("  [AVVISO] Problema illimitato in Fase 1")
+                    self.status = 'unbounded'
+                    self._save_state("Problema illimitato in Fase 1", phase=1, status='unbounded')
                     return None
 
                 entering = self.all_var_names[pivot_col - 1]
@@ -476,7 +486,8 @@ class SimplexSolver:
                 if iteration > 500:
                     if verbose:
                         print("  [ERRORE] Raggiunto il limite massimo di iterazioni in Fase 1.")
-                    self._save_state("Limite iterazioni raggiunto in Fase 1 (possibile ciclo)", phase=1)
+                    self.status = 'max_iterations'
+                    self._save_state("Limite iterazioni raggiunto in Fase 1 (possibile ciclo)", phase=1, status='max_iterations')
                     return None
 
                 pinfo = {
@@ -495,7 +506,8 @@ class SimplexSolver:
             if w_final > 1e-6:
                 if verbose:
                     print("\n  [ERRORE] Problema inammissibile: l'insieme dei vincoli non ammette soluzioni (w > 0).")
-                self._save_state("Problema Inammissibile (nessuna soluzione)", phase=1)
+                self.status = 'infeasible'
+                self._save_state("Problema Inammissibile (nessuna soluzione)", phase=1, status='infeasible')
                 return None
 
             if verbose:
@@ -557,6 +569,9 @@ class SimplexSolver:
         while True:
             pivot_col = self._find_pivot_column()
             if pivot_col == -1:
+                self.status = 'optimal'
+                if self.history:
+                    self.history[-1]['status'] = 'optimal'
                 if verbose:
                     print("\n  [OTTIMO] Soluzione ottima trovata")
                     dec_vars, z = self.get_decision_variables()
@@ -570,6 +585,8 @@ class SimplexSolver:
             if pivot_row == -1:
                 if verbose:
                     print("  [AVVISO] Problema illimitato")
+                self.status = 'unbounded'
+                self._save_state("Problema illimitato (funzione obiettivo non superiormente limitata)", phase=2, status='unbounded')
                 return None
 
             entering = self.all_var_names[pivot_col - 1]
@@ -582,7 +599,8 @@ class SimplexSolver:
             if iteration > 500:
                 if verbose:
                     print("  [ERRORE] Raggiunto il limite massimo di iterazioni in Fase 2.")
-                self._save_state("Limite iterazioni raggiunto in Fase 2 (possibile ciclo)", phase=2)
+                self.status = 'max_iterations'
+                self._save_state("Limite iterazioni raggiunto in Fase 2 (possibile ciclo)", phase=2, status='max_iterations')
                 return None
 
             pinfo = {
@@ -612,33 +630,66 @@ class SimplexSolver:
         """
         Calcola i valori ottimi delle variabili duali (prezzi ombra) y*
         associati a ciascun vincolo originale.
+        Disponibile solo se il problema ha raggiunto una soluzione ottima finita.
         """
+        if getattr(self, 'status', 'optimal') != 'optimal':
+            return None
         return self.get_dual_vector_at_step(len(self.history) - 1) if self.history else None
 
     def get_dual_vector_at_step(self, step_idx):
         """
-        Calcola la stima del vettore duale y all'iterazione step_idx
-        leggendo i costi ridotti associati alle colonne di slack nel tableau.
+        Calcola il vettore dei moltiplicatori duali y all'iterazione step_idx.
+        Risolve il sistema B^T pi = c_B corrispondente alla base attiva a quello step.
+        Funziona esattamente e robustamente per qualsiasi combinazione di vincoli (<=, >=, =).
         """
         if not self.history or step_idx < 0 or step_idx >= len(self.history):
             return None
+
         state = self.history[step_idx]
-        tableau = state['tableau']
-        all_names = state['all_var_names']
-        y = np.zeros(self.m)
+        basis = state['basis']
+        m, n = self.m, self.n
 
-        for i in range(self.m):
-            name = self.slack_names[i]
-            if name in all_names:
-                col_idx = all_names.index(name) + 1
-                c_bar = tableau[self.m, col_idx]
-                y_val = -c_bar
-                if self.b_orig[i] < -1e-10:
-                    y_val = -y_val
-                y[i] = y_val
+        # Se siamo in Fase 1, non siamo ancora in una base ammissibile della Fase 2
+        if state.get('phase', 2) == 1:
+            return np.zeros(m)
+
+        # Matrice A_std per la Fase 2: decisionali (A_norm) + colonne di slack/surplus
+        n_slack = len(self.slack_names)
+        A_std = np.zeros((m, n + n_slack))
+        A_std[:, :n] = self.A_norm
+        for k, (row_idx, coeff) in enumerate(self.slack_cols):
+            A_std[row_idx, n + k] = coeff
+
+        c_std = np.zeros(n + n_slack)
+        c_std[:n] = self.c_orig
+
+        # Variabili valide in base (escludendo eventuali artificiali residue di Fase 1)
+        valid_basis = [b for b in basis if b < n + n_slack]
+        if len(valid_basis) != m:
+            return np.zeros(m)
+
+        B = A_std[:, valid_basis]
+        cB = c_std[valid_basis]
+
+        try:
+            pi, _, _, _ = np.linalg.lstsq(B.T, cB, rcond=1e-10)
+        except Exception:
+            return np.zeros(m)
+
+        # Aggiusta per l'eventuale inversione di segno di b_orig < 0
+        y = np.zeros(m)
+        for i in range(m):
+            if self.b_orig[i] < -1e-10:
+                y[i] = -pi[i]
             else:
-                y[i] = 0.0
+                y[i] = pi[i]
 
+        # Il solver lavora sempre in forma di massimo (c negato se il problema era di min):
+        # per un problema di minimo il duale del problema originale ha segno opposto.
+        if getattr(self, 'is_min', False):
+            y = -y
+
+        y[np.abs(y) < 1e-10] = 0.0
         return y
 
     def get_dual_formulation(self, is_primal_min=False):
