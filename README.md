@@ -31,9 +31,30 @@ Interfaccia grafica con visualizzazione 2D/3D della regione ammissibile, animazi
   - `Esempio in R²` (vincoli misti $\le, \ge$ con Due Fasi)
   - `Esempio con Duale (R² ➔ R³)` (2 variabili decisionali e 3 vincoli: regione primale poligonale 2D e poliedro duale solido 3D con traiettorie sincronizzate)
 
-<p align="center">
-  <img src="docs/img/screenshot_2d.png" alt="SimplexStudio 2D Visualization" width="850">
-</p>
+---
+
+### Doppia Visualizzazione Geometrica (Spazio Originale vs Nuovi Assi)
+
+SimplexStudio permette di osservare la convergenza dell'algoritmo sia nello spazio cartesiano delle **variabili decisionali originali**, sia nello spazio mobile delle **variabili fuori base** (dove il vertice corrente corrisponde sempre all'origine degli assi):
+
+| Spazio Variabili Originali (R²) | Spazio Nuovi Assi Fuori Base (s₂, s₃) |
+|:---:|:---:|
+| <img src="docs/img/screenshot_2d.png" alt="Spazio Originale 2D" width="450"> | <img src="docs/img/screenshot_nuovi_assi.png" alt="Nuovi Assi Fuori Base" width="450"> |
+
+---
+
+### Studio e Analisi Completa della Dualità
+
+Cliccando sul pulsante **Analisi Duale**, SimplexStudio apre un modulo dedicato per esplorare in profondità la relazione tra problema primale e duale:
+- Formulazione automatica del **problema duale associato**
+- Verifica del **Teorema della Dualità Forte** ($z^* = w^*$)
+- Calcolo dei **Prezzi Ombra** $y^*$ (interpretazione economica della sensibilità)
+- Verifica interattiva delle condizioni del **Teorema degli Scarti Complementari** (*Complementary Slackness*)
+- Rendering 3D/2D del **Poliedro Duale** con animazione del percorso del vettore $y^{(k)}$ verso l'ottimo $y^*$
+
+| Formulazione & Scarti Complementari | Geometria del Poliedro Duale (3D) |
+|:---:|:---:|
+| <img src="docs/img/screenshot_duale_teoria.png" alt="Formulazione e Scarti Complementari" width="450"> | <img src="docs/img/screenshot_duale_3d.png" alt="Geometria Duale 3D" width="450"> |
 
 ---
 
@@ -192,16 +213,29 @@ s.t.
 
 ## Generare un eseguibile
 
-Per creare un file `.app` (macOS) o `.exe` (Windows) che non richiede Python installato:
+Per creare un'applicazione autonoma `.app` (macOS) o `.exe` (Windows) che non richiede Python installato:
 
 ```bash
 pip3 install pyinstaller
-pyinstaller --onefile --windowed --name "SimplexStudio" simplex_gui.py
 ```
 
-L'eseguibile sara nella cartella `dist/`.
+- **macOS** (genera `dist/SimplexStudio.app` con icona ufficiale):
+  ```bash
+  pyinstaller --noconsole --name "SimplexStudio" \
+    --icon "docs/img/icon.icns" \
+    --add-data "docs/img:docs/img" \
+    simplex_gui.py
+  ```
 
-> L'eseguibile funziona solo sul sistema operativo su cui viene compilato.
+- **Windows** (genera un singolo file `dist/SimplexStudio.exe`):
+  ```cmd
+  pyinstaller --noconsole --onefile --name "SimplexStudio" ^
+    --icon "docs/img/icon.ico" ^
+    --add-data "docs/img;docs/img" ^
+    simplex_gui.py
+  ```
+
+> L'eseguibile funziona sul sistema operativo su cui viene compilato.
 
 ---
 
