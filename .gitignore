@@ -1,0 +1,19 @@
+# Guida interna non pubblicata
+GUIDA.md
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Matplotlib cache
+.matplotlib/
+/tmp/mpl/
+
+# PyInstaller / Build
+build/
+dist/
+*.spec
+
+# macOS junk
+.DS_Store
