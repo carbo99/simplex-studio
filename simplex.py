@@ -63,6 +63,7 @@ class SimplexSolver:
         self.use_fractions = use_fractions
         self.pivot_rule = pivot_rule.lower() if pivot_rule else 'dantzig'
         self.status = 'running'
+        self.redundant_rows = []   # righe ridondanti individuate al termine della Fase 1
 
         # Salva segni originali per la visualizzazione geometrica
         if signs is None:
@@ -536,13 +537,12 @@ class SimplexSolver:
             self.tableau = np.delete(self.tableau, range(art_start, self.tableau.shape[1]), axis=1)
             self.all_var_names = self.var_names + self.slack_names
 
-            # Per eventuali righe ridondanti in cui l'artificiale era rimasta in base:
-            # trova un indice valido tra le variabili non in base
-            for r in redundant_rows:
-                for v in range(len(self.all_var_names)):
-                    if v not in self.basis:
-                        self.basis[r] = v
-                        break
+            # Righe ridondanti (0 = 0): la riga resta nel tableau come riga di zeri e conserva
+            # l'indice della propria artificiale (ormai senza colonna) come "segnaposto" in base.
+            # Non si assegna NESSUNA variabile reale: la riga non ha colonna unitaria, quindi una
+            # variabile "finta" renderebbe incoerenti base, soluzione e moltiplicatori duali.
+            # Tutto il codice a valle ignora gli indici >= numero di colonne.
+            self.redundant_rows = list(redundant_rows)
 
             # Configura riga obiettivo per Fase 2
             self.current_obj_label = "-z"
@@ -558,7 +558,11 @@ class SimplexSolver:
                     if abs(coeff) > 1e-10:
                         self.tableau[self.m, :] -= coeff * self.tableau[i, :]
 
-            self._save_state("Inizio Fase 2 (Base ammissibile)", phase=2)
+            desc2 = "Inizio Fase 2 (Base ammissibile)"
+            if self.redundant_rows:
+                nomi = ", ".join(f"V{i+1}" for i in self.redundant_rows)
+                desc2 += f" – vincoli ridondanti: {nomi}"
+            self._save_state(desc2, phase=2)
             if verbose:
                 print("\n" + "─" * 40)
                 print("  FASE 2: Ottimizzazione della funzione obiettivo")
@@ -663,18 +667,25 @@ class SimplexSolver:
         c_std = np.zeros(n + n_slack)
         c_std[:n] = self.c_orig
 
-        # Variabili valide in base (escludendo eventuali artificiali residue di Fase 1)
-        valid_basis = [b for b in basis if b < n + n_slack]
-        if len(valid_basis) != m:
+        # Righe con una vera variabile di base (le righe ridondanti hanno solo il segnaposto
+        # dell'artificiale e hanno moltiplicatore duale 0: il vincolo e' implicato dagli altri)
+        kept_rows = [i for i in range(m) if basis[i] < n + n_slack]
+        if not kept_rows:
             return np.zeros(m)
+        valid_basis = [basis[i] for i in kept_rows]
 
-        B = A_std[:, valid_basis]
+        B = A_std[np.ix_(kept_rows, valid_basis)]
         cB = c_std[valid_basis]
 
         try:
-            pi, _, _, _ = np.linalg.lstsq(B.T, cB, rcond=1e-10)
-        except Exception:
-            return np.zeros(m)
+            pi_k = np.linalg.solve(B.T, cB)
+        except np.linalg.LinAlgError:
+            try:
+                pi_k, _, _, _ = np.linalg.lstsq(B.T, cB, rcond=1e-10)
+            except Exception:
+                return np.zeros(m)
+        pi = np.zeros(m)
+        pi[kept_rows] = pi_k
 
         # Aggiusta per l'eventuale inversione di segno di b_orig < 0
         y = np.zeros(m)
