@@ -166,25 +166,25 @@ class SimplexGUI:
         bottom_fixed = tk.Frame(parent, bg=COL['bg'], bd=1, relief=tk.GROOVE)
         bottom_fixed.pack(fill=tk.X, side=tk.BOTTOM, padx=6, pady=(0, 6))
 
-        # ── Pulsanti azione (fissi in basso) ──
+        # ── Pulsanti azione (fissi in basso, affiancati su un'unica riga per ottimizzare lo spazio) ──
         btn_frame = tk.Frame(bottom_fixed, bg=COL['bg'])
-        btn_frame.pack(fill=tk.X, padx=6, pady=(6, 3))
+        btn_frame.pack(fill=tk.X, padx=8, pady=(6, 4))
 
-        # Pulsante RISOLVI: realizzato con tk.Label per garantire il colore rosso vivo anche su macOS
+        # Pulsante RISOLVI (principale, largo e ben visibile)
         self.solve_btn = tk.Label(btn_frame, text="RISOLVI",
-                                  font=(FONT_UI_BOLD[0], FONT_UI_BOLD[1] + 2, 'bold'),
+                                  font=(FONT_UI_BOLD[0], FONT_UI_BOLD[1] + 1, 'bold'),
                                   bg='#D32F2F', fg='#FFFFFF',
                                   cursor='hand2', pady=7, relief=tk.RAISED, bd=1)
-        self.solve_btn.pack(fill=tk.X, pady=(0, 3))
+        self.solve_btn.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 4))
         self.solve_btn.bind('<Button-1>', lambda e: self._solve())
         self.solve_btn.bind('<Enter>', lambda e: self.solve_btn.config(bg='#B71C1C'))
         self.solve_btn.bind('<Leave>', lambda e: self.solve_btn.config(bg='#D32F2F'))
 
-        # Pulsante Reset
+        # Pulsante Reset (compatto affiancato a destra)
         self.reset_btn = tk.Label(btn_frame, text="Reset", font=FONT_UI,
                                   bg='#ECEFF1', fg=COL['text2'],
-                                  cursor='hand2', pady=4, relief=tk.GROOVE, bd=1)
-        self.reset_btn.pack(fill=tk.X, pady=(0, 2))
+                                  cursor='hand2', padx=14, pady=7, relief=tk.GROOVE, bd=1)
+        self.reset_btn.pack(side=tk.RIGHT, fill=tk.Y, padx=(4, 0))
         self.reset_btn.bind('<Button-1>', lambda e: self._reset())
         self.reset_btn.bind('<Enter>', lambda e: self.reset_btn.config(bg='#CFD8DC'))
         self.reset_btn.bind('<Leave>', lambda e: self.reset_btn.config(bg='#ECEFF1'))
@@ -193,7 +193,7 @@ class SimplexGUI:
         sep = tk.Frame(bottom_fixed, height=1, bg=COL['border'])
         sep.pack(fill=tk.X, padx=10, pady=(3, 3))
 
-        # ── Logo SimplexStudio & Copyright compatti ──
+        # ── Logo SimplexStudio & Copyright ben visibili ──
         brand_frame = tk.Frame(bottom_fixed, bg=COL['bg'])
         brand_frame.pack(fill=tk.X, padx=6, pady=(0, 4))
 
@@ -201,19 +201,25 @@ class SimplexGUI:
         if HAS_PIL and os.path.exists(logo_path):
             try:
                 logo_img_raw = Image.open(logo_path)
-                # Dimensione proporzionata ed elegante (85x85 px)
-                logo_img_resized = logo_img_raw.resize((85, 85), Image.Resampling.LANCZOS)
+                # Rimuove i margini trasparenti vuoti per sfruttare al 100% lo spazio
+                bbox = logo_img_raw.getbbox()
+                if bbox:
+                    logo_img_raw = logo_img_raw.crop(bbox)
+                lw, lh = logo_img_raw.size
+                target_h = 135
+                target_w = int(lw * (target_h / lh))
+                logo_img_resized = logo_img_raw.resize((target_w, target_h), Image.Resampling.LANCZOS)
                 self.logo_photo = ImageTk.PhotoImage(logo_img_resized)
                 logo_label = tk.Label(brand_frame, image=self.logo_photo, bg=COL['bg'])
-                logo_label.pack(anchor='center', pady=(1, 1))
+                logo_label.pack(anchor='center', pady=(2, 2))
             except Exception:
                 pass
 
-        FONT_COPY = ('Helvetica Neue', 9) if IS_MAC else ('Segoe UI', 8)
+        FONT_COPY = ('Helvetica Neue', 11) if IS_MAC else ('Segoe UI', 10)
         tk.Label(brand_frame,
                  text="© 2026 Alessandro Carboni\ncarboni.alessandro@outlook.it",
                  font=FONT_COPY, bg=COL['bg'], fg=COL['text2'],
-                 justify=tk.CENTER).pack(anchor='center', pady=(1, 2))
+                 justify=tk.CENTER).pack(anchor='center', pady=(2, 4))
 
         # 2. Contenitore superiore: scrollabile (Configurazione, Obiettivo, Vincoli, Esempi)
         top_container = tk.Frame(parent, bg=COL['bg'])
