@@ -1795,6 +1795,10 @@ def main():
             except Exception:
                 pass
         root.deiconify()  # Mostra la finestra principale
+        try:
+            root.state('zoomed')  # Avvia a schermo intero massimizzato
+        except Exception:
+            pass
         root.lift()
         root.focus_force()
 
@@ -1803,6 +1807,10 @@ def main():
         root.after(1500, _close_splash_and_show)
     else:
         root.deiconify()
+        try:
+            root.state('zoomed')
+        except Exception:
+            pass
 
     root.mainloop()
 
