@@ -107,7 +107,7 @@ class SimplexGUI:
         sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
         w, h = min(1560, sw - 40), min(950, sh - 40)
         root.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
-        root.minsize(1280, 720)
+        root.minsize(1100, 640)
 
         # ── Stato ──
         self.n_vars = tk.IntVar(value=3)
@@ -160,7 +160,62 @@ class SimplexGUI:
     # ─── Pannello sinistro ────────────────────────────
 
     def _build_left(self, parent):
-        # 1. Contenitore superiore: scrollabile (Configurazione, Obiettivo, Vincoli, Esempi, Azioni)
+        # 1. Contenitore inferiore FISSO (Pulsanti Azione + Logo + Copyright)
+        # Viene impacchettato per PRIMO con side=tk.BOTTOM per garantire
+        # che rimanga sempre visibile e fisso a qualsiasi risoluzione.
+        bottom_fixed = tk.Frame(parent, bg=COL['bg'], bd=1, relief=tk.GROOVE)
+        bottom_fixed.pack(fill=tk.X, side=tk.BOTTOM, padx=6, pady=(0, 6))
+
+        # ── Pulsanti azione (fissi in basso) ──
+        btn_frame = tk.Frame(bottom_fixed, bg=COL['bg'])
+        btn_frame.pack(fill=tk.X, padx=6, pady=(6, 3))
+
+        # Pulsante RISOLVI: realizzato con tk.Label per garantire il colore rosso vivo anche su macOS
+        self.solve_btn = tk.Label(btn_frame, text="RISOLVI",
+                                  font=(FONT_UI_BOLD[0], FONT_UI_BOLD[1] + 2, 'bold'),
+                                  bg='#D32F2F', fg='#FFFFFF',
+                                  cursor='hand2', pady=7, relief=tk.RAISED, bd=1)
+        self.solve_btn.pack(fill=tk.X, pady=(0, 3))
+        self.solve_btn.bind('<Button-1>', lambda e: self._solve())
+        self.solve_btn.bind('<Enter>', lambda e: self.solve_btn.config(bg='#B71C1C'))
+        self.solve_btn.bind('<Leave>', lambda e: self.solve_btn.config(bg='#D32F2F'))
+
+        # Pulsante Reset
+        self.reset_btn = tk.Label(btn_frame, text="Reset", font=FONT_UI,
+                                  bg='#ECEFF1', fg=COL['text2'],
+                                  cursor='hand2', pady=4, relief=tk.GROOVE, bd=1)
+        self.reset_btn.pack(fill=tk.X, pady=(0, 2))
+        self.reset_btn.bind('<Button-1>', lambda e: self._reset())
+        self.reset_btn.bind('<Enter>', lambda e: self.reset_btn.config(bg='#CFD8DC'))
+        self.reset_btn.bind('<Leave>', lambda e: self.reset_btn.config(bg='#ECEFF1'))
+
+        # Separatore visivo sottile
+        sep = tk.Frame(bottom_fixed, height=1, bg=COL['border'])
+        sep.pack(fill=tk.X, padx=10, pady=(3, 3))
+
+        # ── Logo SimplexStudio & Copyright compatti ──
+        brand_frame = tk.Frame(bottom_fixed, bg=COL['bg'])
+        brand_frame.pack(fill=tk.X, padx=6, pady=(0, 4))
+
+        logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'docs', 'img', 'logo.png')
+        if HAS_PIL and os.path.exists(logo_path):
+            try:
+                logo_img_raw = Image.open(logo_path)
+                # Dimensione proporzionata ed elegante (85x85 px)
+                logo_img_resized = logo_img_raw.resize((85, 85), Image.Resampling.LANCZOS)
+                self.logo_photo = ImageTk.PhotoImage(logo_img_resized)
+                logo_label = tk.Label(brand_frame, image=self.logo_photo, bg=COL['bg'])
+                logo_label.pack(anchor='center', pady=(1, 1))
+            except Exception:
+                pass
+
+        FONT_COPY = ('Helvetica Neue', 9) if IS_MAC else ('Segoe UI', 8)
+        tk.Label(brand_frame,
+                 text="© 2026 Alessandro Carboni\ncarboni.alessandro@outlook.it",
+                 font=FONT_COPY, bg=COL['bg'], fg=COL['text2'],
+                 justify=tk.CENTER).pack(anchor='center', pady=(1, 2))
+
+        # 2. Contenitore superiore: scrollabile (Configurazione, Obiettivo, Vincoli, Esempi)
         top_container = tk.Frame(parent, bg=COL['bg'])
         top_container.pack(fill=tk.BOTH, expand=True)
 
@@ -186,32 +241,6 @@ class SimplexGUI:
             canvas.yview_scroll(-1 * (event.delta // 120), "units")
         self.left_inner.bind('<Enter>', lambda e: canvas.bind_all('<MouseWheel>', _on_mousewheel))
         self.left_inner.bind('<Leave>', lambda e: canvas.unbind_all('<MouseWheel>'))
-
-        # 2. Contenitore inferiore FISSO (Logo e Copyright non scrollabili)
-        bottom_fixed = tk.Frame(parent, bg=COL['bg'], bd=1, relief=tk.GROOVE)
-        bottom_fixed.pack(fill=tk.X, side=tk.BOTTOM, padx=6, pady=(0, 6))
-
-        # ── Logo SimplexStudio ──
-        logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'docs', 'img', 'logo.png')
-        if HAS_PIL and os.path.exists(logo_path):
-            try:
-                logo_img_raw = Image.open(logo_path)
-                # Dimensione più grande e ben definita (200x200 px)
-                logo_img_resized = logo_img_raw.resize((200, 200), Image.Resampling.LANCZOS)
-                self.logo_photo = ImageTk.PhotoImage(logo_img_resized)
-                logo_label = tk.Label(bottom_fixed, image=self.logo_photo, bg=COL['bg'])
-                logo_label.pack(anchor='center', pady=(8, 2))
-            except Exception:
-                pass
-
-        # ── Copyright ──
-        copy_frame = tk.Frame(bottom_fixed, bg=COL['bg'])
-        copy_frame.pack(fill=tk.X, padx=10, pady=(2, 8))
-        FONT_COPY = ('Helvetica Neue', 11) if IS_MAC else ('Segoe UI', 10)
-        tk.Label(copy_frame,
-                 text="© 2026 Alessandro Carboni\ncarboni.alessandro@outlook.it",
-                 font=FONT_COPY, bg=COL['bg'], fg=COL['text2'],
-                 justify=tk.CENTER).pack(anchor='center')
 
         # ── Popola l'area scrollabile (f = self.left_inner) ──
         f = self.left_inner
@@ -295,28 +324,6 @@ class SimplexGUI:
                   command=lambda: self._load_example('dual_demo')
                   ).pack(fill=tk.X, pady=2)
 
-        # ── Pulsanti azione ──
-        btn_frame = tk.Frame(f, bg=COL['bg'])
-        btn_frame.pack(fill=tk.X, padx=8, pady=(8, 10))
-
-        # Pulsante RISOLVI: realizzato con tk.Label per garantire il colore rosso vivo anche su macOS
-        self.solve_btn = tk.Label(btn_frame, text="RISOLVI",
-                                  font=(FONT_UI_BOLD[0], FONT_UI_BOLD[1] + 2, 'bold'),
-                                  bg='#D32F2F', fg='#FFFFFF',
-                                  cursor='hand2', pady=8, relief=tk.RAISED, bd=1)
-        self.solve_btn.pack(fill=tk.X, pady=3)
-        self.solve_btn.bind('<Button-1>', lambda e: self._solve())
-        self.solve_btn.bind('<Enter>', lambda e: self.solve_btn.config(bg='#B71C1C'))
-        self.solve_btn.bind('<Leave>', lambda e: self.solve_btn.config(bg='#D32F2F'))
-
-        # Pulsante Reset
-        self.reset_btn = tk.Label(btn_frame, text="Reset", font=FONT_UI,
-                                  bg='#ECEFF1', fg=COL['text2'],
-                                  cursor='hand2', pady=5, relief=tk.GROOVE, bd=1)
-        self.reset_btn.pack(fill=tk.X, pady=2)
-        self.reset_btn.bind('<Button-1>', lambda e: self._reset())
-        self.reset_btn.bind('<Enter>', lambda e: self.reset_btn.config(bg='#CFD8DC'))
-        self.reset_btn.bind('<Leave>', lambda e: self.reset_btn.config(bg='#ECEFF1'))
 
     # ─── Pannello destro ──────────────────────────────
 
@@ -614,13 +621,17 @@ class SimplexGUI:
     # ═══════════════════════════════════════════════════
 
     def _parse_float(self, text):
-        """Converte testo in float. Supporta frazioni come 1/2."""
+        """Converte testo in float. Supporta frazioni come 1/2, 1.5/2, -3/4 o decimali 0.5."""
         text = text.strip()
         if not text:
             return 0.0
         if '/' in text:
             parts = text.split('/')
-            return float(Fraction(int(parts[0]), int(parts[1])))
+            if len(parts) == 2:
+                den = float(parts[1].strip())
+                if abs(den) < 1e-12:
+                    raise ZeroDivisionError("Il denominatore di una frazione non può essere zero.")
+                return float(parts[0].strip()) / den
         return float(text)
 
     def _parse_inputs(self):
@@ -674,7 +685,7 @@ class SimplexGUI:
         # Regola di pivot selezionata
         p_rule = 'dantzig' if 'dantzig' in self.pivot_rule.get().lower() else 'bland'
         try:
-            self.solver = SimplexSolver(c, A, b, signs=signs, var_names=var_names, pivot_rule=p_rule)
+            self.solver = SimplexSolver(c, A, b, signs=signs, var_names=var_names, pivot_rule=p_rule, is_min=is_min)
             result = self.solver.solve(verbose=False, plot3d=False)
         except Exception as e:
             messagebox.showerror("Errore", f"Errore durante la risoluzione:\n{e}")
@@ -720,10 +731,19 @@ class SimplexGUI:
             prefix = ""
 
         # Aggiorna label
+        status = getattr(self.solver, 'status', 'optimal')
         if step == self.total_steps - 1:
-            if "Inammissibile" in state['description']:
+            if status == 'infeasible' or "Inammissibile" in state['description']:
                 self.step_label.config(
-                    text="Inammissibile: nessuna soluzione possibile",
+                    text="Inammissibile: l'insieme dei vincoli non ammette soluzioni",
+                    fg=COL['danger'])
+            elif status == 'unbounded' or "illimitato" in state['description'].lower():
+                self.step_label.config(
+                    text=f"{prefix}Passo {step}/{self.total_steps-1} (ILLIMITATO)",
+                    fg=COL['danger'])
+            elif status == 'max_iterations' or "Limite iterazioni" in state['description']:
+                self.step_label.config(
+                    text=f"{prefix}Passo {step}/{self.total_steps-1} (LIMITE ITERAZIONI)",
                     fg=COL['danger'])
             else:
                 self.step_label.config(
@@ -832,18 +852,27 @@ class SimplexGUI:
 
         lbl_display = obj_lbl.replace('-', '')
         z_display = self._frac(z_val)
-        tag = 'optimal' if step == self.total_steps - 1 else 'info'
+        status = getattr(self.solver, 'status', 'optimal')
+        is_opt = (step == self.total_steps - 1 and status == 'optimal')
+        tag = 'optimal' if is_opt else 'info'
         t.insert(tk.END, f"  {lbl_display} = {z_display}", tag)
 
         if step == self.total_steps - 1:
-            t.insert(tk.END, "  [OTTIMO]", 'optimal')
+            if status == 'optimal':
+                t.insert(tk.END, "  [OTTIMO]", 'optimal')
+            elif status == 'unbounded':
+                t.insert(tk.END, "  [PROBLEMA ILLIMITATO]", 'leaving')
+            elif status == 'infeasible':
+                t.insert(tk.END, "  [PROBLEMA INAMMISSIBILE]", 'leaving')
+            elif status == 'max_iterations':
+                t.insert(tk.END, "  [LIMITE ITERAZIONI RAGGIUNTO]", 'leaving')
 
         t.insert(tk.END, "\n")
         basis_names = [names[b] for b in basis if b < len(names)]
         t.insert(tk.END, f"  Base: {{{', '.join(basis_names)}}}\n", 'info')
 
         # Se siamo all'ottimo, mostra anche i Prezzi Ombra (Variabili Duali Ottime y*)
-        if step == self.total_steps - 1 and self.solver:
+        if is_opt and self.solver:
             y_opt = self.solver.get_dual_solution()
             if y_opt is not None:
                 t.insert(tk.END, "\n  Variabili Duali Ottime y* (Prezzi Ombra):\n", 'optimal')
@@ -1100,9 +1129,17 @@ class SimplexGUI:
             ax.set_zlim([0, max(verts[:, 2].max(), 0.1) + margin])
 
         ax.legend(fontsize=9, loc='upper left')
+        status = getattr(self.solver, 'status', 'optimal')
         title = f"Iterazione {step}"
         if step == self.total_steps - 1:
-            title += " — OTTIMO"
+            if status == 'optimal':
+                title += " — OTTIMO"
+            elif status == 'unbounded':
+                title += " — ILLIMITATO"
+            elif status == 'infeasible':
+                title += " — INAMMISSIBILE"
+            elif status == 'max_iterations':
+                title += " — LIMITE ITERAZIONI"
         ax.set_title(title, fontsize=13, pad=10)
 
     def _plot_2d(self, ax, step):
@@ -1191,9 +1228,17 @@ class SimplexGUI:
         ax.set_ylim([-0.3, max_y * 1.15])
         ax.grid(True, alpha=0.25)
         ax.legend(fontsize=8, loc='upper right')
+        status = getattr(self.solver, 'status', 'optimal')
         title = f"Iterazione {step}"
         if step == self.total_steps - 1:
-            title += " — OTTIMO"
+            if status == 'optimal':
+                title += " — OTTIMO"
+            elif status == 'unbounded':
+                title += " — ILLIMITATO"
+            elif status == 'infeasible':
+                title += " — INAMMISSIBILE"
+            elif status == 'max_iterations':
+                title += " — LIMITE ITERAZIONI"
         ax.set_title(title, fontsize=13)
 
     # ═══════════════════════════════════════════════════
@@ -1290,6 +1335,13 @@ class SimplexGUI:
             messagebox.showinfo("Analisi Duale", "Inserisci e risolvi prima un problema lineare premendo RISOLVI.")
             return
 
+        if getattr(self.solver, 'status', 'optimal') != 'optimal':
+            status = getattr(self.solver, 'status', 'unbounded')
+            msg = "il problema risulta inammissibile (nessuna soluzione ammissibile)." if status == 'infeasible' else "il problema risulta illimitato (funzione obiettivo non limitata superiormente)."
+            messagebox.showwarning("Analisi Duale non disponibile",
+                f"L'Analisi e la Geometria della Dualità richiedono una soluzione ottima finita.\n\nAttualmente {msg}")
+            return
+
         dual_win = tk.Toplevel(self.root)
         dual_win.title("SimplexStudio – Analisi e Teoria della Dualità")
         dual_win.configure(bg=COL['bg'])
@@ -1349,12 +1401,20 @@ class SimplexGUI:
         # Valore ottimo duale: b^T y
         w_opt = sum(dual_info['obj_coeffs'][i] * y_opt[i] for i in range(len(y_opt))) if y_opt is not None else 0.0
 
+        diff_dual = abs(z_opt - w_opt) if y_opt is not None else float('inf')
+        if diff_dual < 1e-4:
+            duality_verif = "✔ z* = w* (Scarto di dualità nullo: l'ottimo primale coincide esattamente con l'ottimo duale)"
+            verif_fg = '#2E7D32'  # Verde successo
+        else:
+            duality_verif = f"✘ Scarto di dualità non nullo: |z* - w*| = {diff_dual:.4f}"
+            verif_fg = '#C62828'  # Rosso errore
+
         lbl_text = (
             f"• Valore Ottimo Primale:  z* = {self._frac(z_opt)}\n"
             f"• Valore Ottimo Duale:    w* = {self._frac(w_opt)}\n"
-            f"✔ z* = w* (Scarto di dualità nullo: l'ottimo primale coincide esattamente con l'ottimo duale)"
+            f"{duality_verif}"
         )
-        tk.Label(sec1, text=lbl_text, font=FONT_MONO, bg='#F3E5F5', fg='#311B92', justify=tk.LEFT).pack(anchor='w')
+        tk.Label(sec1, text=lbl_text, font=FONT_MONO, bg='#F3E5F5', fg=verif_fg, justify=tk.LEFT).pack(anchor='w')
 
         # ── Sezione 2: Formulazione Algebrica del Problema Duale ──
         sec2 = tk.LabelFrame(f, text=" Problema Duale Associato ", font=FONT_SECTION,
@@ -1714,6 +1774,17 @@ def show_splash(root):
         return None
 
 def main():
+    # Abilita DPI awareness su Windows per rendering nitido dei caratteri
+    if platform.system() == 'Windows':
+        try:
+            from ctypes import windll
+            windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:
+            try:
+                windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
+
     root = tk.Tk()
     root.withdraw()  # Nascondi la finestra principale durante la splash screen
 
