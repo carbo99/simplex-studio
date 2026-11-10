@@ -1780,17 +1780,6 @@ def show_splash(root):
         return None
 
 def main():
-    # Abilita DPI awareness su Windows per rendering nitido dei caratteri
-    if platform.system() == 'Windows':
-        try:
-            from ctypes import windll
-            windll.shcore.SetProcessDpiAwareness(1)
-        except Exception:
-            try:
-                windll.user32.SetProcessDPIAware()
-            except Exception:
-                pass
-
     root = tk.Tk()
     root.withdraw()  # Nascondi la finestra principale durante la splash screen
 
