@@ -20,7 +20,8 @@ import os
 
 # Imposta cache scrivibile per Matplotlib
 if 'MPLCONFIGDIR' not in os.environ:
-    os.environ['MPLCONFIGDIR'] = '/tmp/mpl'
+    import tempfile
+    os.environ['MPLCONFIGDIR'] = os.path.join(tempfile.gettempdir(), 'mpl')
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -29,7 +30,8 @@ from fractions import Fraction
 import platform
 
 import matplotlib
-matplotlib.use('TkAgg')
+if os.environ.get('MPLBACKEND', '').lower() != 'agg':
+    matplotlib.use('TkAgg')
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
@@ -50,6 +52,42 @@ except ImportError:
 # Importa il solver
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from simplex import SimplexSolver
+
+
+def asset_path(filename):
+    """Find bundled or source artwork, independently of the working directory."""
+    module_dir = os.path.dirname(os.path.abspath(__file__))
+    bases = [getattr(sys, '_MEIPASS', module_dir), module_dir]
+    if getattr(sys, 'frozen', False):
+        bases.append(os.path.dirname(sys.executable))
+    for base in dict.fromkeys(bases):
+        for relative in (('docs', 'img'), ('img',)):
+            candidate = os.path.join(base, *relative, filename)
+            if os.path.isfile(candidate):
+                return candidate
+    return os.path.join(module_dir, 'docs', 'img', filename)
+
+
+def set_window_icon(root):
+    """Retain the Tk image and use the native multi-size ICO on Windows."""
+    png = asset_path('icon.png')
+    if os.path.isfile(png):
+        try:
+            if HAS_PIL:
+                with Image.open(png) as source:
+                    photo = ImageTk.PhotoImage(source.resize((64, 64), Image.Resampling.LANCZOS))
+            else:
+                photo = tk.PhotoImage(master=root, file=png)
+            root.iconphoto(True, photo)
+            root._simplex_icon = photo
+        except (OSError, ValueError, tk.TclError):
+            pass
+    ico = asset_path('icon.ico')
+    if sys.platform == 'win32' and os.path.isfile(ico):
+        try:
+            root.iconbitmap(default=ico)
+        except tk.TclError:
+            pass
 
 # ═══════════════════════════════════════════════════════
 #  Costanti di stile
@@ -94,14 +132,7 @@ class SimplexGUI:
         self.root.title("SimplexStudio – Programmazione Lineare")
         self.root.configure(bg=COL['bg'])
 
-        # Imposta icona della finestra
-        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'docs', 'img', 'icon.png')
-        if HAS_PIL and os.path.exists(icon_path):
-            try:
-                self._app_icon = ImageTk.PhotoImage(Image.open(icon_path).resize((64, 64), Image.Resampling.LANCZOS))
-                self.root.iconphoto(True, self._app_icon)
-            except Exception:
-                pass
+        set_window_icon(self.root)
 
         # Dimensione finestra
         sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
@@ -131,14 +162,18 @@ class SimplexGUI:
         self._rebuild_form()
 
         # ── Shortcuts ──
-        root.bind('<Right>',  lambda e: self._step_forward())
-        root.bind('<Left>',   lambda e: self._step_backward())
-        root.bind('<space>',  lambda e: self._toggle_animation())
+        root.bind('<Right>', lambda e: self._shortcut(e, self._step_forward))
+        root.bind('<Left>', lambda e: self._shortcut(e, self._step_backward))
+        root.bind('<space>', lambda e: self._shortcut(e, self._toggle_animation))
         root.bind('<Escape>', lambda e: self._stop_animation())
 
     # ═══════════════════════════════════════════════════
     #  Costruzione UI
     # ═══════════════════════════════════════════════════
+
+    def _shortcut(self, event, action):
+        if not isinstance(event.widget, (tk.Entry, ttk.Entry, tk.Text)):
+            action()
 
     def _build_ui(self):
         # Paned window principale (sinistra / destra)
@@ -197,7 +232,7 @@ class SimplexGUI:
         brand_frame = tk.Frame(bottom_fixed, bg=COL['bg'])
         brand_frame.pack(fill=tk.X, padx=6, pady=(0, 4))
 
-        logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'docs', 'img', 'logo.png')
+        logo_path = asset_path('logo.png')
         if HAS_PIL and os.path.exists(logo_path):
             try:
                 logo_img_raw = Image.open(logo_path)
@@ -628,26 +663,22 @@ class SimplexGUI:
 
     def _parse_float(self, text):
         """Converte testo in float. Supporta frazioni come 1/2, 1.5/2, -3/4 o decimali 0.5."""
-        text = text.strip()
-        if not text:
-            return 0.0
-        if '/' in text:
-            parts = text.split('/')
-            if len(parts) == 2:
-                den = float(parts[1].strip())
-                if abs(den) < 1e-12:
-                    raise ZeroDivisionError("Il denominatore di una frazione non può essere zero.")
-                return float(parts[0].strip()) / den
-        return float(text)
+        from exact_engine import number
+        value = float(number(text.strip() or '0'))
+        if not np.isfinite(value):
+            raise ValueError('Il valore deve essere finito.')
+        return value
 
     def _parse_inputs(self):
         """Legge i valori dai campi e restituisce c, A, b, signs, is_min."""
+        from exact_engine import number
+        parse = lambda text: number(text.strip() or "0")
         n = self.n_vars.get()
 
         # Obiettivo
         c = []
         for e in self.obj_entries:
-            c.append(self._parse_float(e.get()))
+            c.append(parse(e.get()))
 
         # Se min, converti in max negando c
         is_min = self.obj_type.get() == 'min'
@@ -659,8 +690,8 @@ class SimplexGUI:
         b = []
         signs = []
         for row in self.constr_rows:
-            coeffs = [self._parse_float(e.get()) for e in row['coeffs']]
-            rhs = self._parse_float(row['rhs'].get())
+            coeffs = [parse(e.get()) for e in row['coeffs']]
+            rhs = parse(row['rhs'].get())
             s = row['sign'].get()
             s_clean = '<=' if s in ('<=', '≤') else ('>=' if s in ('>=', '≥') else '=')
 
@@ -691,12 +722,13 @@ class SimplexGUI:
         # Regola di pivot selezionata
         p_rule = 'dantzig' if 'dantzig' in self.pivot_rule.get().lower() else 'bland'
         try:
-            self.solver = SimplexSolver(c, A, b, signs=signs, var_names=var_names, pivot_rule=p_rule, is_min=is_min)
-            result = self.solver.solve(verbose=False, plot3d=False)
+            candidate = SimplexSolver(c, A, b, signs=signs, var_names=var_names, pivot_rule=p_rule, is_min=is_min)
+            result = candidate.solve(verbose=False, plot3d=False)
         except Exception as e:
             messagebox.showerror("Errore", f"Errore durante la risoluzione:\n{e}")
             return
 
+        self.solver = candidate
         self.is_min = is_min
         self.total_steps = len(self.solver.history)
         self.current_step = 0
@@ -767,7 +799,7 @@ class SimplexGUI:
 
     def _frac(self, val):
         """Formatta un valore come stringa di frazione."""
-        return str(Fraction(val).limit_denominator(1000))
+        return str(val) if isinstance(val, Fraction) else str(Fraction(float(val)).limit_denominator(10**9))
 
     def _render_tableau(self, state, step):
         """Genera il tableau nel widget Text con colori."""
@@ -775,7 +807,7 @@ class SimplexGUI:
         t.config(state=tk.NORMAL)
         t.delete('1.0', tk.END)
 
-        tableau = state['tableau']
+        tableau = np.array(state.get('exact_tableau', state['tableau']), dtype=object)
         basis = state['basis']
         m = self.solver.m
         names = state['all_var_names']
@@ -846,15 +878,15 @@ class SimplexGUI:
 
         # ── Info sulla soluzione ──
         t.insert(tk.END, "\n")
-        dec = state['decision_vars']
-        z_val = state['z_value']
+        dec = state.get('exact_solution', state['decision_vars'])[:self.solver.n]
+        z_val = state.get('exact_z', state['z_value'])
         if self.is_min and state.get('phase', 2) == 2:
             z_val = -z_val
         n_dec = self.solver.n
         sol_parts = [f"{self.solver.var_names[i]}={self._frac(dec[i])}"
                      for i in range(n_dec)]
 
-        t.insert(tk.END, f"  Soluzione di Base Ammissibile: ({', '.join(sol_parts)})\n", 'info')
+        t.insert(tk.END, f"  Soluzione {'ausiliaria' if state.get('phase') == 1 else 'di base ammissibile'}: ({', '.join(sol_parts)})\n", 'info')
 
         lbl_display = obj_lbl.replace('-', '')
         z_display = self._frac(z_val)
@@ -944,6 +976,7 @@ class SimplexGUI:
         for (r, coeff) in self.solver.slack_cols:
             val = (self.solver.b_norm[r] - np.dot(self.solver.A_norm[r], x)) / coeff
             full.append(val)
+        full.extend([0.0] * len(self.solver.art_names))
         return np.array(full)
 
     def _render_plot_non_basic(self, step):
@@ -956,6 +989,9 @@ class SimplexGUI:
 
         dim = len(nb_indices)
         verts = self._find_vertices()
+        extent = max([5.0] + [float(v.max()) * 1.3 for v in verts] +
+                     [float(h['decision_vars'].max()) * 1.3 for h in self.solver.history])
+        verts = self.solver.display_vertices([(0, extent)] * self.solver.n)
 
         if len(verts) == 0:
             ax = self.fig.add_subplot(111)
@@ -969,7 +1005,7 @@ class SimplexGUI:
         transformed_verts = []
         for v in verts:
             full = self._get_full_variables_for_point(v)
-            if max(nb_indices) < len(full):
+            if nb_indices and max(nb_indices) < len(full):
                 transformed_verts.append(full[nb_indices])
             else:
                 transformed_verts.append(np.zeros(dim))
@@ -994,9 +1030,9 @@ class SimplexGUI:
                        c='navy', s=25, alpha=0.5, zorder=5)
 
             # Evidenzia il vertice corrente (nell'origine degli assi fuori base)
-            color = COL['vertex_optimal'] if step == self.total_steps - 1 else COL['vertex_current']
-            marker = '*' if step == self.total_steps - 1 else 'D'
-            size = 200 if step == self.total_steps - 1 else 130
+            color = COL['vertex_optimal'] if step == self.total_steps - 1 and self.solver.status == 'optimal' else COL['vertex_current']
+            marker = '*' if step == self.total_steps - 1 and self.solver.status == 'optimal' else 'D'
+            size = 200 if step == self.total_steps - 1 and self.solver.status == 'optimal' else 130
             ax.scatter([0], [0], [0], c=color, s=size, marker=marker,
                        edgecolors='black', linewidths=1.5, zorder=15,
                        label=f"Vertice It.{step} (Origine)")
@@ -1032,9 +1068,9 @@ class SimplexGUI:
                        c='navy', s=30, alpha=0.5, zorder=5)
 
             # Evidenzia vertice corrente (Origine)
-            color = COL['vertex_optimal'] if step == self.total_steps - 1 else COL['vertex_current']
-            marker = '*' if step == self.total_steps - 1 else 'D'
-            size = 200 if step == self.total_steps - 1 else 130
+            color = COL['vertex_optimal'] if step == self.total_steps - 1 and self.solver.status == 'optimal' else COL['vertex_current']
+            marker = '*' if step == self.total_steps - 1 and self.solver.status == 'optimal' else 'D'
+            size = 200 if step == self.total_steps - 1 and self.solver.status == 'optimal' else 130
             ax.scatter([0], [0], c=color, s=size, marker=marker,
                        edgecolors='black', linewidths=1.5, zorder=15,
                        label=f"Vertice It.{step} (Origine)")
@@ -1070,16 +1106,10 @@ class SimplexGUI:
         verts = self._find_vertices()
         names = self.solver.var_names
 
-        if len(verts) >= 4 and HAS_SCIPY:
-            hull = ConvexHull(verts)
-            faces = [[verts[i] for i in simplex] for simplex in hull.simplices]
-            poly = Poly3DCollection(faces, alpha=0.12, facecolor='cyan',
-                                     edgecolor='navy', linewidth=0.5)
-            ax.add_collection3d(poly)
-
-        if len(verts) > 0:
-            ax.scatter(verts[:, 0], verts[:, 1], verts[:, 2],
-                       c='navy', s=20, alpha=0.4, zorder=5)
+        from geometry import draw_region
+        extent = max(float(verts.max()) * 1.3, 5) if len(verts) else 10
+        extent = max(extent, max(float(h['decision_vars'].max()) for h in self.solver.history) * 1.3)
+        draw_region(ax, self.solver.display_vertices([(0, extent)] * 3), .12)
 
         # Percorso del simplesso fino allo step corrente
         points = []
@@ -1101,7 +1131,7 @@ class SimplexGUI:
                 if i == 0:
                     color, marker, size = COL['vertex_start'], '^', 120
                     label = "Start"
-                elif i == step and step == self.total_steps - 1:
+                elif i == step and step == self.total_steps - 1 and self.solver.status == 'optimal':
                     color, marker, size = COL['vertex_optimal'], '*', 200
                     label = "Ottimo"
                 elif i == step:
@@ -1115,11 +1145,13 @@ class SimplexGUI:
                            edgecolors='black', linewidths=1,
                            label=label if label else None)
 
-                z_val = self.solver.history[i]['z_value']
-                if self.is_min:
+                h = self.solver.history[i]
+                z_val = h.get('exact_z', h['z_value'])
+                objective_label = 'w' if h['phase'] == 1 else 'z'
+                if self.is_min and h['phase'] == 2:
                     z_val = -z_val
                 ax.text(pt[0] + 0.08, pt[1] + 0.08, pt[2] + 0.08,
-                        f"It.{i}\nz={self._frac(z_val)}",
+                        f"It.{i}\n{objective_label}={self._frac(z_val)}",
                         fontsize=8, fontweight='bold', color='darkred',
                         bbox=dict(boxstyle='round,pad=0.2', facecolor='white',
                                   alpha=0.85, edgecolor='gray'))
@@ -1128,11 +1160,9 @@ class SimplexGUI:
         ax.set_ylabel(names[1], fontsize=11, labelpad=8)
         ax.set_zlabel(names[2], fontsize=11, labelpad=8)
 
-        if len(verts) > 0:
-            margin = 0.3
-            ax.set_xlim([0, max(verts[:, 0].max(), 0.1) + margin])
-            ax.set_ylim([0, max(verts[:, 1].max(), 0.1) + margin])
-            ax.set_zlim([0, max(verts[:, 2].max(), 0.1) + margin])
+        ax.set_xlim(0, extent)
+        ax.set_ylim(0, extent)
+        ax.set_zlim(0, extent)
 
         ax.legend(fontsize=9, loc='upper left')
         status = getattr(self.solver, 'status', 'optimal')
@@ -1160,6 +1190,8 @@ class SimplexGUI:
             max_y = max(verts[:, 1].max() * 1.3, 1)
         else:
             max_x, max_y = 10, 10
+        max_x = max(max_x, max(float(h['decision_vars'][0]) for h in self.solver.history) * 1.3)
+        max_y = max(max_y, max(float(h['decision_vars'][1]) for h in self.solver.history) * 1.3)
 
         x_range = np.linspace(0, max_x * 1.2, 400)
 
@@ -1171,27 +1203,22 @@ class SimplexGUI:
             bi = b[i]
             color = colors_line[i % len(colors_line)]
             s_sym = '≤' if self.solver.signs_orig[i] == '<=' else ('≥' if self.solver.signs_orig[i] == '>=' else '=')
-            if abs(a2) > 1e-10:
+            if a2 != 0:
                 y_line = (bi - a1 * x_range) / a2
                 mask = (y_line >= -0.5) & (y_line <= max_y * 1.3)
                 lbl = f"{self._frac(a1)}x₁+{self._frac(a2)}x₂ {s_sym} {self._frac(bi)}"
                 ax.plot(x_range[mask], y_line[mask], color=color,
                         linewidth=1.5, alpha=0.7, label=lbl)
-            elif abs(a1) > 1e-10:
+            elif a1 != 0:
                 x_val = bi / a1
+                if a1 < 0:
+                    s_sym = {'≤': '≥', '≥': '≤', '=': '='}[s_sym]
                 ax.axvline(x=x_val, color=color, linewidth=1.5, alpha=0.7,
                            label=f"x₁ {s_sym} {self._frac(x_val)}")
 
-        # Regione ammissibile
-        if len(verts) >= 3:
-            center = np.mean(verts, axis=0)
-            angles = np.arctan2(verts[:, 1] - center[1], verts[:, 0] - center[0])
-            order = np.argsort(angles)
-            sorted_v = verts[order]
-            from matplotlib.patches import Polygon
-            poly = Polygon(sorted_v, alpha=0.18, facecolor='cyan',
-                           edgecolor='navy', linewidth=1.5)
-            ax.add_patch(poly)
+        # Clip to viewport: a hull of LP vertices alone hides unbounded rays.
+        from geometry import draw_region
+        draw_region(ax, self.solver.display_vertices([(0, max_x * 1.15), (0, max_y * 1.15)]), .18)
 
         # Percorso simplesso
         points = [self.solver.history[s]['decision_vars'][:2]
@@ -1205,7 +1232,7 @@ class SimplexGUI:
             if i == 0:
                 color, marker, size = COL['vertex_start'], '^', 120
                 label = "Start"
-            elif i == step and step == self.total_steps - 1:
+            elif i == step and step == self.total_steps - 1 and self.solver.status == 'optimal':
                 color, marker, size = COL['vertex_optimal'], '*', 200
                 label = "Ottimo"
             elif i == step:
@@ -1219,10 +1246,12 @@ class SimplexGUI:
                        edgecolors='black', linewidths=1,
                        label=label if label else None)
 
-            z_val = self.solver.history[i]['z_value']
-            if self.is_min:
+            h = self.solver.history[i]
+            z_val = h.get('exact_z', h['z_value'])
+            objective_label = 'w' if h['phase'] == 1 else 'z'
+            if self.is_min and h['phase'] == 2:
                 z_val = -z_val
-            ax.annotate(f"It.{i}\nz={self._frac(z_val)}", pt,
+            ax.annotate(f"It.{i}\n{objective_label}={self._frac(z_val)}", pt,
                         textcoords="offset points", xytext=(12, 12),
                         fontsize=9, fontweight='bold', color='darkred',
                         bbox=dict(boxstyle='round,pad=0.2', facecolor='white',
@@ -1498,49 +1527,51 @@ class SimplexGUI:
 
     def _populate_dual_geom_tab(self, parent):
         """Costruisce la visualizzazione del poliedro duale con animazione passo-passo."""
-        dual_info = self.solver.get_dual_formulation(is_primal_min=self.is_min)
-        y_opt = self.solver.get_dual_solution()
+        solver = self.solver
+        animation = {"id": None}
+        dual_info = solver.get_dual_formulation(is_primal_min=self.is_min)
+        y_opt = solver.get_dual_solution()
         m_dual_vars = len(y_opt)  # numero di variabili duali = numero di vincoli primali
 
         # Controlli animazione duale in alto
         ctrl_dual = tk.Frame(parent, bg=COL['card'], bd=1, relief=tk.GROOVE, padx=10, pady=6)
         ctrl_dual.pack(fill=tk.X, side=tk.TOP, pady=(0, 6))
 
-        total_steps = len(self.solver.history)
-        self.dual_step = tk.IntVar(value=total_steps - 1)
-        self.dual_anim_id = None
+        total_steps = len(solver.history)
+        dual_step = tk.IntVar(value=total_steps - 1)
+        animation['id'] = None
 
-        self.dual_step_lbl = tk.Label(ctrl_dual, text=f"Passo {self.dual_step.get()}/{total_steps-1} (OTTIMO)",
+        step_label = tk.Label(ctrl_dual, text=f"Passo {dual_step.get()}/{total_steps-1} (OTTIMO)",
                                       font=FONT_UI_BOLD, bg=COL['card'], fg=COL['success'])
-        self.dual_step_lbl.pack(side=tk.LEFT, padx=(0, 12))
+        step_label.pack(side=tk.LEFT, padx=(0, 12))
 
         def _step_dual(delta):
-            cur = self.dual_step.get()
+            cur = dual_step.get()
             nxt = max(0, min(total_steps - 1, cur + delta))
-            self.dual_step.set(nxt)
+            dual_step.set(nxt)
             _render_dual_figure()
 
         def _stop_dual_anim():
-            if self.dual_anim_id is not None:
-                parent.after_cancel(self.dual_anim_id)
-                self.dual_anim_id = None
+            if animation['id'] is not None:
+                parent.after_cancel(animation['id'])
+                animation['id'] = None
             dual_play_btn.config(text="Play", bg=COL['succ_lt'], fg=COL['success'])
 
         def _dual_anim_tick():
-            cur = self.dual_step.get()
+            cur = dual_step.get()
             if cur < total_steps - 1:
-                self.dual_step.set(cur + 1)
+                dual_step.set(cur + 1)
                 _render_dual_figure()
-                self.dual_anim_id = parent.after(self.speed_ms.get(), _dual_anim_tick)
+                animation['id'] = parent.after(self.speed_ms.get(), _dual_anim_tick)
             else:
                 _stop_dual_anim()
 
         def _toggle_dual_anim():
-            if self.dual_anim_id is not None:
+            if animation['id'] is not None:
                 _stop_dual_anim()
             else:
-                if self.dual_step.get() >= total_steps - 1:
-                    self.dual_step.set(0)
+                if dual_step.get() >= total_steps - 1:
+                    dual_step.set(0)
                     _render_dual_figure()
                 dual_play_btn.config(text="Pausa", bg='#FFE0B2', fg=COL['warning'])
                 _dual_anim_tick()
@@ -1563,83 +1594,41 @@ class SimplexGUI:
         canvas_dual = FigureCanvasTkAgg(fig_dual, master=parent)
         canvas_dual.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-        # Calcolo dei vertici del poliedro duale (se m_dual_vars == 3)
-        dual_verts_3d = []
-        if m_dual_vars == 3:
-            # Trova i vertici della regione ammissibile duale
-            A_d = dual_info['A']
-            b_d = dual_info['b']
-            signs_d = dual_info['constr_signs']
-            y_signs_d = dual_info['y_signs']
-
-            # Box di delimitazione per la visualizzazione grafica
-            M_bound = max(float(np.max(np.abs(y_opt))) * 2.5, 5.0)
-
-            planes_A = list(A_d)
-            planes_b = list(b_d)
-            planes_s = list(signs_d)
-
-            for i in range(3):
-                # non negatività o non positività
-                row = np.zeros(3); row[i] = 1.0
-                if '>= 0' in y_signs_d[i]:
-                    planes_A.append(row); planes_b.append(0.0); planes_s.append('>=')
-                    planes_A.append(row); planes_b.append(M_bound); planes_s.append('<=')
-                elif '<= 0' in y_signs_d[i]:
-                    planes_A.append(row); planes_b.append(0.0); planes_s.append('<=')
-                    planes_A.append(row); planes_b.append(-M_bound); planes_s.append('>=')
-                else:
-                    planes_A.append(row); planes_b.append(-M_bound); planes_s.append('>=')
-                    planes_A.append(row); planes_b.append(M_bound); planes_s.append('<=')
-
-            planes_A = np.array(planes_A)
-            planes_b = np.array(planes_b)
-
-            for combo in combinations(range(len(planes_b)), 3):
-                A_sub = planes_A[list(combo)]
-                b_sub = planes_b[list(combo)]
-                try:
-                    if abs(np.linalg.det(A_sub)) < 1e-7:
-                        continue
-                    y_pt = np.linalg.solve(A_sub, b_sub)
-                    # Verifica ammissibilità
-                    feasible = True
-                    for k in range(len(planes_b)):
-                        val_k = np.dot(planes_A[k], y_pt)
-                        if planes_s[k] == '>=' and val_k < planes_b[k] - 1e-5:
-                            feasible = False; break
-                        if planes_s[k] == '<=' and val_k > planes_b[k] + 1e-5:
-                            feasible = False; break
-                    if feasible:
-                        if not any(np.allclose(y_pt, v, atol=1e-4) for v in dual_verts_3d):
-                            dual_verts_3d.append(y_pt)
-                except Exception:
-                    pass
-            dual_verts_3d = np.array(dual_verts_3d)
+        from geometry import vertices, draw_region
+        M_bound = max(float(np.max(np.abs(y_opt))) * 2.5, 5.0)
+        A_d, b_d, signs_d = list(dual_info['A']), list(dual_info['b']), list(dual_info['constr_signs'])
+        for i, sign in enumerate(dual_info['y_signs']):
+            if sign != 'libera':
+                row = np.zeros(m_dual_vars); row[i] = 1
+                A_d.append(row); b_d.append(0); signs_d.append('>=' if sign == '>= 0' else '<=')
+        dual_verts = vertices(A_d, b_d, signs_d, m_dual_vars, nonnegative=False,
+                              bounds=[(-M_bound, M_bound)] * m_dual_vars) if m_dual_vars in (2, 3) else []
+        dual_verts_3d = dual_verts
 
         def _render_dual_figure():
             fig_dual.clear()
-            s_idx = self.dual_step.get()
-            y_curr = self.solver.get_dual_vector_at_step(s_idx)
+            s_idx = dual_step.get()
+            y_curr = solver.get_dual_vector_at_step(s_idx)
 
             # Aggiorna label stato
             if s_idx == total_steps - 1:
-                self.dual_step_lbl.config(
+                step_label.config(
                     text=f"Passo {s_idx}/{total_steps-1} (OTTIMO)",
                     fg=COL['success'])
             else:
-                self.dual_step_lbl.config(
+                step_label.config(
                     text=f"Passo {s_idx}/{total_steps-1}",
                     fg=COL['text'])
 
             # Calcola traiettoria duale fino a s_idx
-            dual_traj = [self.solver.get_dual_vector_at_step(k) for k in range(s_idx + 1)]
-            traj_arr = np.array(dual_traj)
+            dual_traj = [y for k in range(s_idx + 1) if (y := solver.get_dual_vector_at_step(k)) is not None]
+            traj_arr = np.array(dual_traj).reshape(-1, m_dual_vars)
 
             if m_dual_vars == 2:
                 ax = fig_dual.add_subplot(111)
-                max_val = max(abs(y_opt).max() * 2.0, 5.0)
-                y1_range = np.linspace(-1, max_val, 300)
+                max_val = M_bound
+                draw_region(ax, dual_verts, .14, color="#AB47BC")
+                y1_range = np.linspace(-max_val, max_val, 300)
 
                 colors_d = ['#1976D2', '#388E3C', '#F57C00', '#7B1FA2', '#00838F']
                 for j in range(len(dual_info['b'])):
@@ -1651,7 +1640,7 @@ class SimplexGUI:
 
                     if abs(a2) > 1e-10:
                         y2_line = (bj - a1 * y1_range) / a2
-                        mask = (y2_line >= -1) & (y2_line <= max_val)
+                        mask = (y2_line >= -max_val) & (y2_line <= max_val)
                         lbl = f"{self._frac(a1)}y₁+{self._frac(a2)}y₂ {sign_j} {self._frac(bj)}"
                         ax.plot(y1_range[mask], y2_line[mask], color=c_line, linewidth=1.5, label=lbl)
                     elif abs(a1) > 1e-10:
@@ -1677,24 +1666,13 @@ class SimplexGUI:
                 ax.set_title(f"Evoluzione del Vettore Duale y — Iterazione {s_idx}", fontsize=12, fontweight='bold')
                 ax.grid(True, alpha=0.3)
                 ax.legend(fontsize=9, loc='upper right')
-                ax.set_xlim([-0.5, max_val])
-                ax.set_ylim([-0.5, max_val])
+                ax.set_xlim([-max_val, max_val])
+                ax.set_ylim([-max_val, max_val])
 
             elif m_dual_vars == 3:
                 ax = fig_dual.add_subplot(111, projection='3d')
 
-                # Disegna il poliedro solido duale con Poly3DCollection
-                if len(dual_verts_3d) >= 4 and HAS_SCIPY:
-                    try:
-                        hull_d = ConvexHull(dual_verts_3d)
-                        faces_d = [[dual_verts_3d[i] for i in simplex] for simplex in hull_d.simplices]
-                        poly_d = Poly3DCollection(faces_d, alpha=0.16, facecolor='#AB47BC',
-                                                 edgecolor='#6A1B9A', linewidth=0.8)
-                        ax.add_collection3d(poly_d)
-                        ax.scatter(dual_verts_3d[:, 0], dual_verts_3d[:, 1], dual_verts_3d[:, 2],
-                                   c='#6A1B9A', s=18, alpha=0.4, zorder=4)
-                    except Exception:
-                        pass
+                draw_region(ax, dual_verts_3d, .16, color="#AB47BC")
 
                 # Traiettoria duale
                 if len(traj_arr) > 1:
@@ -1724,10 +1702,10 @@ class SimplexGUI:
                 ax.set_title(f"Regione Ammissibile Duale e Percorso y — Iterazione {s_idx}", fontsize=12, fontweight='bold')
                 ax.legend(fontsize=9, loc='upper left')
 
-                max_v = max(float(np.max(np.abs(y_opt))) * 1.6, 2.5)
-                ax.set_xlim([-0.2, max_v])
-                ax.set_ylim([-0.2, max_v])
-                ax.set_zlim([-0.2, max_v])
+                max_v = M_bound
+                ax.set_xlim([-max_v, max_v])
+                ax.set_ylim([-max_v, max_v])
+                ax.set_zlim([-max_v, max_v])
             else:
                 ax = fig_dual.add_subplot(111)
                 subs = str.maketrans('0123456789', '₀₁₂₃₄₅₆₇₈₉')
@@ -1739,6 +1717,12 @@ class SimplexGUI:
             fig_dual.tight_layout()
             canvas_dual.draw()
 
+        def _destroy_dual(event):
+            if event.widget is parent and animation['id'] is not None:
+                self.root.after_cancel(animation['id'])
+                animation['id'] = None
+        parent.bind('<Destroy>', _destroy_dual, add='+')
+
         # Render iniziale
         _render_dual_figure()
 
@@ -1749,7 +1733,7 @@ class SimplexGUI:
 
 def show_splash(root):
     """Mostra una splash screen elegante e centrata all'avvio dell'applicazione."""
-    splash_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'docs', 'img', 'splash.png')
+    splash_path = asset_path('splash.png')
     if not (HAS_PIL and os.path.exists(splash_path)):
         return None
 

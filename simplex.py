@@ -43,178 +43,68 @@ class SimplexSolver:
     """
 
     def __init__(self, c, A, b, signs=None, var_names=None, use_fractions=True, pivot_rule='dantzig', is_min=False):
-        """
-        Parametri
-        ----------
-        c : lista/array        – coefficienti della funzione obiettivo (da massimizzare)
-        A : matrice             – coefficienti dei vincoli (m x n)
-        b : lista/array         – termini noti dei vincoli (m,)
-        signs : lista di str    – segno di ogni vincolo ('<=', '>=', '=' o '≤', '≥')
-        var_names : lista       – nomi delle variabili decisionali (default: x1, x2, ...)
-        use_fractions : bool    – se True usa frazioni esatte per il display
-        pivot_rule : str        – regola di pivot: 'dantzig' (default classico) o 'bland' (anti-ciclo)
-        is_min : bool           – se True il problema originale era di minimizzazione
-        """
-        self.is_min = is_min
+        from exact_engine import ExactSimplex, number
+        c = [number(v) for v in c]
+        A = [[number(v) for v in row] for row in A]
+        b = [number(v) for v in b]
+        self.n, self.m = len(c), len(b)
+        if not c or len(A) != self.m or any(len(row) != self.n for row in A):
+            raise ValueError('Dimensioni incompatibili di c, A e b.')
+        aliases = {'<=': '<=', '≤': '<=', '>=': '>=', '≥': '>=', '=': '='}
+        signs = list(signs) if signs is not None else ['<='] * self.m
+        if len(signs) != self.m or any(v not in aliases for v in signs):
+            raise ValueError('Segni dei vincoli non validi.')
+        self.signs_orig = [aliases[v] for v in signs]
+        self.var_names = list(var_names) if var_names is not None else [f'x{i+1}' for i in range(self.n)]
+        if len(self.var_names) != self.n or len(set(self.var_names)) != self.n:
+            raise ValueError('I nomi delle variabili devono essere univoci e coerenti con c.')
+        self.pivot_rule = (pivot_rule or 'dantzig').lower()
+        if self.pivot_rule not in ('dantzig', 'bland'):
+            raise ValueError('Regola pivot non valida.')
+        self.is_min, self.use_fractions = is_min, use_fractions
+        # Compatibility: c is the maximization cost, already negated by legacy
+        # callers for min problems. Swift accepts the original objective instead.
         self.c_orig = np.array(c, dtype=float)
-        self.A_orig = np.array(A, dtype=float)
+        self.A_orig = np.array(A, dtype=float).reshape(self.m, self.n)
         self.b_orig = np.array(b, dtype=float)
-        self.m, self.n = self.A_orig.shape
-        self.use_fractions = use_fractions
-        self.pivot_rule = pivot_rule.lower() if pivot_rule else 'dantzig'
+        if not all(np.isfinite(v).all() for v in (self.c_orig, self.A_orig, self.b_orig)):
+            raise ValueError('Coefficienti fuori dall’intervallo visualizzabile.')
+        self.history, self.redundant_rows, self.normalization_notes = [], [], []
         self.status = 'running'
-        self.redundant_rows = []   # righe ridondanti individuate al termine della Fase 1
+        self.needs_phase1 = any(s != '<=' or bi < 0 for s, bi in zip(self.signs_orig, b))
+        self._exact = ExactSimplex(c, A, b, self.signs_orig, self.var_names, self.pivot_rule, self._accept_exact)
+        self.needs_phase1 = self._exact.phase == 1
+        self.A_norm = np.array(self._exact.normal_A, dtype=float).reshape(self.m, self.n)
+        self.b_norm = np.array(self._exact.normal_b, dtype=float)
+        self.signs_norm = self._exact.normal_signs
+        self.slack_cols = self._exact.slacks
+        self.slack_names = [f's{i+1}' for i in range(len(self.slack_cols))]
+        self.art_names = [name for name in self.all_var_names[self.n+len(self.slack_cols):]]
+        for i, bi in enumerate(b):
+            if bi < 0:
+                self.normalization_notes.append(f'Vincolo {i+1}: RHS negativo, segno invertito.')
 
-        # Salva segni originali per la visualizzazione geometrica
-        if signs is None:
-            self.signs_orig = ['<='] * self.m
-        else:
-            self.signs_orig = [
-                '<=' if s in ('<=', '≤') else ('>=' if s in ('>=', '≥') else '=')
-                for s in signs
-            ]
-
-        # Nomi delle variabili decisionali
-        if var_names is None:
-            self.var_names = [f"x{i+1}" for i in range(self.n)]
-        else:
-            self.var_names = list(var_names)
-
-        # ── Normalizzazione automatica dei vincoli ──
-        # Se un vincolo ha b_i < 0, moltiplica per -1 e inverte il segno
-        self.A_norm = []
-        self.b_norm = []
-        self.signs_norm = []
-        self.normalization_notes = []
-
-        for i in range(self.m):
-            row = list(self.A_orig[i])
-            bi = float(self.b_orig[i])
-            s = self.signs_orig[i]
-
-            if bi < -1e-10:
-                row = [-val for val in row]
-                bi = -bi
-                s_new = '<=' if s == '>=' else ('>=' if s == '<=' else '=')
-                self.normalization_notes.append(
-                    f"Vincolo {i+1}: b={self._format_val(self.b_orig[i])} < 0 → moltiplicato per -1 (segno invertito in {s_new})"
-                )
-                s = s_new
-            elif abs(bi) < 1e-10:
-                bi = 0.0
-
-            self.A_norm.append(row)
-            self.b_norm.append(bi)
-            self.signs_norm.append(s)
-
-        self.A_norm = np.array(self.A_norm, dtype=float)
-        self.b_norm = np.array(self.b_norm, dtype=float)
-
-        # ── Configurazione delle variabili (slack, surplus, artificiali) ──
-        self._setup_variables()
-
-        # ── Costruzione tableau iniziale ──
-        self._build_initial_tableau()
-
-        # Storico delle iterazioni
-        self.history = []
-        desc = "Tableau iniziale (Fase 1)" if self.needs_phase1 else "Tableau iniziale"
-        self._save_state(desc, phase=(1 if self.needs_phase1 else 2))
-
-    def _setup_variables(self):
-        """Identifica variabili di slack, surplus e artificiali necessarie."""
-        self.slack_names = []
-        self.art_names = []
-        self.slack_cols = []  # (row_index, coeff)
-        self.art_cols = []    # (row_index, coeff)
-        self.art_rows = []
-
-        s_count = 1
-        a_count = 1
-
-        for i, s in enumerate(self.signs_norm):
-            if s == '<=':
-                name = f"s{s_count}"
-                s_count += 1
-                self.slack_names.append(name)
-                self.slack_cols.append((i, 1.0))
-            elif s == '>=':
-                name_s = f"s{s_count}"
-                s_count += 1
-                self.slack_names.append(name_s)
-                self.slack_cols.append((i, -1.0))  # surplus con segno -1
-
-                name_a = f"a{a_count}"
-                a_count += 1
-                self.art_names.append(name_a)
-                self.art_cols.append((i, 1.0))    # artificiale con segno +1
-                self.art_rows.append(i)
-            elif s == '=':
-                name_a = f"a{a_count}"
-                a_count += 1
-                self.art_names.append(name_a)
-                self.art_cols.append((i, 1.0))
-                self.art_rows.append(i)
-
-        self.needs_phase1 = len(self.art_names) > 0
-        self.all_var_names = self.var_names + self.slack_names + self.art_names
-
-    def _build_initial_tableau(self):
-        """Costruisce il tableau iniziale (Fase 1 se ci sono artificiali, altrimenti Fase 2)."""
-        m, n = self.m, self.n
-        total_vars = len(self.all_var_names)
-
-        self.tableau = np.zeros((m + 1, total_vars + 1))
-
-        # Riempi termini noti b e coefficienti A
-        for i in range(m):
-            self.tableau[i, 0] = self.b_norm[i]
-            self.tableau[i, 1:1+n] = self.A_norm[i]
-
-        # Colonne slack/surplus
-        col = 1 + n
-        for (r, coeff) in self.slack_cols:
-            self.tableau[r, col] = coeff
-            col += 1
-
-        # Colonne artificiali
-        for (r, coeff) in self.art_cols:
-            self.tableau[r, col] = coeff
-            col += 1
-
-        # Base iniziale
-        self.basis = []
-        s_idx = 0
-        a_idx = 0
-        for i, s in enumerate(self.signs_norm):
-            if s == '<=':
-                self.basis.append(n + s_idx)
-                s_idx += 1
-            elif s == '>=':
-                s_idx += 1
-                self.basis.append(n + len(self.slack_names) + a_idx)
-                a_idx += 1
-            elif s == '=':
-                self.basis.append(n + len(self.slack_names) + a_idx)
-                a_idx += 1
-
-        # Riga obiettivo
-        if self.needs_phase1:
-            # Fase 1: minimizza w = sum(a_i) <=> massimizza -w = -sum(a_i)
-            # In forma canonica rispetto alle variabili artificiali in base:
-            for r in self.art_rows:
-                self.tableau[m, 0] += self.tableau[r, 0]
-                self.tableau[m, 1:] += self.tableau[r, 1:]
-            art_start = 1 + n + len(self.slack_names)
-            self.tableau[m, art_start:] = 0.0
-            self.current_obj_label = "-w"
-        else:
-            # Fase 2 diretta
-            self.tableau[m, 0] = 0.0
-            self.tableau[m, 1:1+n] = self.c_orig
-            self.current_obj_label = "-z"
+    def _accept_exact(self, engine, description, pivot, status):
+        self.tableau = np.array(engine.t + [engine.obj], dtype=float)
+        self.basis, self.all_var_names = list(engine.basis), list(engine.names)
+        self.current_obj_label = '-w' if engine.phase == 1 else '-z'
+        self.redundant_rows = list(engine.redundant)
+        self.status = status
+        self._save_state(description, pivot, engine.phase, status)
+        state = self.history[-1]
+        state['exact_tableau'] = [list(row) for row in engine.t + [engine.obj]]
+        exact_solution = [Fraction(0)] * len(engine.names)
+        for i, basic in enumerate(engine.basis):
+            if basic < len(exact_solution):
+                exact_solution[basic] = engine.t[i][0]
+        state['exact_solution'] = exact_solution
+        state['exact_z'] = engine.obj[0] if engine.phase == 1 else -engine.obj[0]
+        state['dual_vector'] = np.array([v*f*(-1 if self.is_min else 1)
+                                        for v, f in zip(engine.dual, engine.flips)], dtype=float)
 
     def _to_frac(self, val):
+        if isinstance(val, Fraction):
+            return str(val)
         if abs(val) < 1e-10:
             return "0"
         if abs(val - round(val)) < 1e-10:
@@ -226,6 +116,7 @@ class SimplexSolver:
         if self.use_fractions:
             return self._to_frac(val)
         else:
+            val = float(val)
             if val == int(val):
                 return str(int(val))
             return f"{val:.4f}"
@@ -272,6 +163,7 @@ class SimplexSolver:
 
     def print_tableau(self, highlight_pivot=None, iteration=None, phase_name=None):
         m, n = self.m, self.n
+        tableau = np.array(self.history[-1]['exact_tableau'], dtype=object)
         total_vars = len(self.all_var_names)
         obj_lbl = getattr(self, 'current_obj_label', '-z')
 
@@ -285,13 +177,13 @@ class SimplexSolver:
         for k in range(total_vars):
             w = max(6, len(self.all_var_names[k]) + 2)
             for i in range(m + 1):
-                val_len = len(self._format_val(self.tableau[i, 1 + k]))
+                val_len = len(self._format_val(tableau[i, 1 + k]))
                 w = max(w, val_len + 2)
             col_widths.append(w)
 
         z_width = max(6, len(obj_lbl) + 2)
         for i in range(m + 1):
-            val_len = len(self._format_val(self.tableau[i, 0]))
+            val_len = len(self._format_val(tableau[i, 0]))
             z_width = max(z_width, val_len + 2)
 
         margin = "    "
@@ -307,11 +199,11 @@ class SimplexSolver:
         # Riga obiettivo
         obj_str = margin
         for k in range(total_vars):
-            val = self._format_val(self.tableau[m, 1 + k])
+            val = self._format_val(tableau[m, 1 + k])
             if highlight_pivot and (m, 1 + k) == highlight_pivot:
                 val = f"[{val}]"
             obj_str += f" {val:^{col_widths[k]}}"
-        z_val = self._format_val(self.tableau[m, 0])
+        z_val = self._format_val(tableau[m, 0])
         if highlight_pivot and (m, 0) == highlight_pivot:
             z_val = f"[{z_val}]"
         obj_str += f"  │ {z_val:^{z_width}}"
@@ -326,17 +218,17 @@ class SimplexSolver:
         for i in range(m):
             row_str = margin
             for k in range(total_vars):
-                val = self._format_val(self.tableau[i, 1 + k])
+                val = self._format_val(tableau[i, 1 + k])
                 if highlight_pivot and (i, 1 + k) == highlight_pivot:
                     val = f"[{val}]"
                 row_str += f" {val:^{col_widths[k]}}"
-            b_val = self._format_val(self.tableau[i, 0])
+            b_val = self._format_val(tableau[i, 0])
             if highlight_pivot and (i, 0) == highlight_pivot:
                 b_val = f"[{b_val}]"
             row_str += f"  │ {b_val:^{z_width}}"
             print(row_str)
 
-        dec_vars, z = self.get_decision_variables()
+        dec_vars, z = self.history[-1]['exact_solution'][:self.n], self.history[-1]['exact_z']
         print()
         sol_parts = [f"{self.var_names[i]}={self._format_val(dec_vars[i])}" for i in range(self.n)]
         print(f"  Soluzione di Base Ammissibile: ({', '.join(sol_parts)})")
@@ -349,286 +241,24 @@ class SimplexSolver:
     #  Algoritmo di Pivot
     # ============================================================
 
-    def _find_pivot_column(self, max_col=None):
-        """
-        Trova la colonna pivot (variabile entrante).
-        Se self.pivot_rule == 'bland':
-            Regola di Bland: seleziona la prima colonna con costo ridotto positivo
-            (indice minimo della variabile candidata), prevenendo cicli e stalli.
-        Se self.pivot_rule == 'dantzig':
-            Regola classica di Dantzig: seleziona la colonna con costo ridotto positivo massimo.
-        """
-        if max_col is None:
-            max_col = self.tableau.shape[1]
-        
-        candidates = []
-        for j in range(1, max_col):
-            val = self.tableau[self.m, j]
-            if val > 1e-10:
-                candidates.append((j, val))
-
-        if not candidates:
-            return -1
-
-        if self.pivot_rule == 'dantzig':
-            return max(candidates, key=lambda item: item[1])[0]
-        else:
-            # Regola di Bland (minimo indice di variabile / prima colonna j ammissibile)
-            return candidates[0][0]
-
-    def _find_pivot_row(self, pivot_col):
-        """
-        Trova la riga pivot (variabile uscente) con la regola del rapporto minimo b_i / a_ij > 0.
-        In caso di parità (tie) dovuta a degenerazione (più righe con lo stesso rapporto minimo):
-        - Applica la regola di Bland: sceglie la riga la cui variabile di base associata
-          ha indice minimo (self.basis[i]), garantendo matematicamente la convergenza ed escludendo ciclaggi.
-        """
-        min_ratio = float('inf')
-        candidates = []
-
-        for i in range(self.m):
-            a_ij = self.tableau[i, pivot_col]
-            if a_ij > 1e-10:
-                ratio = self.tableau[i, 0] / a_ij
-                if ratio < min_ratio - 1e-10:
-                    min_ratio = ratio
-                    candidates = [i]
-                elif abs(ratio - min_ratio) <= 1e-10:
-                    candidates.append(i)
-
-        if not candidates:
-            return -1
-
-        if len(candidates) == 1:
-            return candidates[0]
-
-        # In caso di parità, la regola di Bland sceglie la variabile di base di indice minimo
-        return min(candidates, key=lambda r: self.basis[r])
-
-    def _pivot(self, pivot_row, pivot_col):
-        pivot_element = self.tableau[pivot_row, pivot_col]
-        self.tableau[pivot_row, :] /= pivot_element
-        for i in range(self.m + 1):
-            if i != pivot_row:
-                factor = self.tableau[i, pivot_col]
-                self.tableau[i, :] -= factor * self.tableau[pivot_row, :]
-        self.basis[pivot_row] = pivot_col - 1
-        # Zero-snapping: azzera il rumore numerico fluttuante a valle delle operazioni elementari di riga
-        self.tableau[np.abs(self.tableau) < 1e-12] = 0.0
-
-    # ============================================================
-    #  Risolutore Completo (Due Fasi)
-    # ============================================================
-
-    def solve(self, verbose=True, plot3d=True, save_figures=False, output_dir=None):
-        if output_dir is None:
-            output_dir = "."
-
+    def solve(self, verbose=True, plot3d=True, save_figures=False, output_dir=None, max_iterations=500):
+        if not isinstance(max_iterations, int) or max_iterations < 0:
+            raise ValueError('Il limite iterazioni deve essere un intero non negativo.')
+        if self.status == 'running':
+            self.status = self._exact.solve(max_iterations)
         if verbose:
-            print("╔══════════════════════════════════════════════════════════════════╗")
-            print("║           METODO DEL SIMPLESSO – Risolutore PL                 ║")
-            print("╠══════════════════════════════════════════════════════════════════╣")
-            print("║  Problema formulato:                                           ║")
-            obj_label_text = "min" if getattr(self, 'is_min', False) else "max"
-            c_disp = -self.c_orig if getattr(self, 'is_min', False) else self.c_orig
-            obj_str = " + ".join(f"{self._format_val(c_disp[i])}·{self.var_names[i]}"
-                                 for i in range(self.n))
-            print(f"║  {obj_label_text} z = {obj_str}")
-            print("║  s.t.")
-            for i in range(self.m):
-                constr = " + ".join(f"{self._format_val(self.A_orig[i, j])}·{self.var_names[j]}"
-                                    for j in range(self.n))
-                s_char = '≤' if self.signs_orig[i] == '<=' else ('≥' if self.signs_orig[i] == '>=' else '=')
-                print(f"║       {constr} {s_char} {self._format_val(self.b_orig[i])}")
-            var_str = ", ".join(self.var_names)
-            print(f"║       {var_str} ≥ 0")
-
-            if self.normalization_notes:
-                print("╟──────────────────────────────────────────────────────────────────╢")
-                print("║  Normalizzazioni automatiche applicate:                        ║")
-                for note in self.normalization_notes:
-                    print(f"║   • {note}")
-
-            print("╚══════════════════════════════════════════════════════════════════╝")
-
-        iteration = 0
-
-        # ── FASE 1 (se necessaria) ──
-        if self.needs_phase1:
-            if verbose:
-                print("\n" + "▶" * 40)
-                print("  FASE 1: Ricerca di una base ammissibile iniziale")
-                print("▶" * 40)
-                self.print_tableau(iteration=0, phase_name="Fase 1 Iniziale")
-
-            art_start = 1 + self.n + len(self.slack_names)
-
-            while True:
-                # Cerca variabile entrante solo tra decisionali e slack/surplus
-                pivot_col = self._find_pivot_column(max_col=art_start)
-                if pivot_col == -1:
-                    break
-
-                pivot_row = self._find_pivot_row(pivot_col)
-                if pivot_row == -1:
-                    if verbose:
-                        print("  [AVVISO] Problema illimitato in Fase 1")
-                    self.status = 'unbounded'
-                    self._save_state("Problema illimitato in Fase 1", phase=1, status='unbounded')
-                    return None
-
-                entering = self.all_var_names[pivot_col - 1]
-                leaving = self.all_var_names[self.basis[pivot_row]]
-                pivot_val = self.tableau[pivot_row, pivot_col]
-
-                self._pivot(pivot_row, pivot_col)
-                iteration += 1
-
-                if iteration > 500:
-                    if verbose:
-                        print("  [ERRORE] Raggiunto il limite massimo di iterazioni in Fase 1.")
-                    self.status = 'max_iterations'
-                    self._save_state("Limite iterazioni raggiunto in Fase 1 (possibile ciclo)", phase=1, status='max_iterations')
-                    return None
-
-                pinfo = {
-                    'entering': entering, 'leaving': leaving,
-                    'pivot_row': pivot_row, 'pivot_col': pivot_col,
-                    'pivot_value': pivot_val
-                }
-                self._save_state(f"Fase 1 – Iterazione {iteration}: {entering} entra, {leaving} esce",
-                                 pivot_info=pinfo, phase=1)
-
-                if verbose:
-                    self.print_tableau(iteration=iteration, phase_name="Fase 1")
-
-            # Verifica ammissibilità
-            w_final = self.tableau[self.m, 0]
-            if w_final > 1e-6:
-                if verbose:
-                    print("\n  [ERRORE] Problema inammissibile: l'insieme dei vincoli non ammette soluzioni (w > 0).")
-                self.status = 'infeasible'
-                self._save_state("Problema Inammissibile (nessuna soluzione)", phase=1, status='infeasible')
-                return None
-
-            if verbose:
-                print("\n  [OK] Base ammissibile trovata alla fine della Fase 1")
-
-            # Rimuovi variabili artificiali ancora eventualmente in base a livello zero
-            # Se una riga i ha ancora una variabile artificiale in base:
-            # cerca di scambiarla con una variabile originale/slack non in base con coefficiente non nullo.
-            # Se tutti i coefficienti della riga sono 0 (vincolo ridondante 0=0), la riga viene azzerata/rimossa.
-            redundant_rows = []
-            for i in range(self.m):
-                if self.basis[i] >= self.n + len(self.slack_names):
-                    drivable = False
-                    for j in range(1, art_start):
-                        var_idx = j - 1
-                        if var_idx not in self.basis and abs(self.tableau[i, j]) > 1e-10:
-                            self._pivot(i, j)
-                            drivable = True
-                            break
-                    if not drivable:
-                        # Vincolo ridondante 0=0: assegna una variabile fittizia già non artificiale
-                        # o azzera la variabile artificiale in base
-                        redundant_rows.append(i)
-
-            # Elimina colonne artificiali dal tableau
-            self.tableau = np.delete(self.tableau, range(art_start, self.tableau.shape[1]), axis=1)
-            self.all_var_names = self.var_names + self.slack_names
-
-            # Righe ridondanti (0 = 0): la riga resta nel tableau come riga di zeri e conserva
-            # l'indice della propria artificiale (ormai senza colonna) come "segnaposto" in base.
-            # Non si assegna NESSUNA variabile reale: la riga non ha colonna unitaria, quindi una
-            # variabile "finta" renderebbe incoerenti base, soluzione e moltiplicatori duali.
-            # Tutto il codice a valle ignora gli indici >= numero di colonne.
-            self.redundant_rows = list(redundant_rows)
-
-            # Configura riga obiettivo per Fase 2
-            self.current_obj_label = "-z"
-            self.tableau[self.m, 0] = 0.0
-            self.tableau[self.m, 1:1+self.n] = self.c_orig
-            self.tableau[self.m, 1+self.n:] = 0.0
-
-            # Canonicalizza rispetto alla base corrente
-            for i in range(self.m):
-                b_var = self.basis[i]
-                if 1 + b_var < self.tableau.shape[1]:
-                    coeff = self.tableau[self.m, 1 + b_var]
-                    if abs(coeff) > 1e-10:
-                        self.tableau[self.m, :] -= coeff * self.tableau[i, :]
-
-            desc2 = "Inizio Fase 2 (Base ammissibile)"
-            if self.redundant_rows:
-                nomi = ", ".join(f"V{i+1}" for i in self.redundant_rows)
-                desc2 += f" – vincoli ridondanti: {nomi}"
-            self._save_state(desc2, phase=2)
-            if verbose:
-                print("\n" + "─" * 40)
-                print("  FASE 2: Ottimizzazione della funzione obiettivo")
-                print("─" * 40)
-                self.print_tableau(iteration=iteration, phase_name="Inizio Fase 2")
-
-        # ── FASE 2 (Ottimizzazione) ──
-        while True:
-            pivot_col = self._find_pivot_column()
-            if pivot_col == -1:
-                self.status = 'optimal'
-                if self.history:
-                    self.history[-1]['status'] = 'optimal'
-                if verbose:
-                    print("\n  [OTTIMO] Soluzione ottima trovata")
-                    dec_vars, z = self.get_decision_variables()
-                    sol_parts = [f"{self.var_names[i]} = {self._format_val(dec_vars[i])}"
-                                 for i in range(self.n)]
-                    print(f"   Soluzione: {', '.join(sol_parts)}")
-                    print(f"   Valore ottimo z* = {self._format_val(z)}")
-                break
-
-            pivot_row = self._find_pivot_row(pivot_col)
-            if pivot_row == -1:
-                if verbose:
-                    print("  [AVVISO] Problema illimitato")
-                self.status = 'unbounded'
-                self._save_state("Problema illimitato (funzione obiettivo non superiormente limitata)", phase=2, status='unbounded')
-                return None
-
-            entering = self.all_var_names[pivot_col - 1]
-            leaving = self.all_var_names[self.basis[pivot_row]]
-            pivot_val = self.tableau[pivot_row, pivot_col]
-
-            self._pivot(pivot_row, pivot_col)
-            iteration += 1
-
-            if iteration > 500:
-                if verbose:
-                    print("  [ERRORE] Raggiunto il limite massimo di iterazioni in Fase 2.")
-                self.status = 'max_iterations'
-                self._save_state("Limite iterazioni raggiunto in Fase 2 (possibile ciclo)", phase=2, status='max_iterations')
-                return None
-
-            pinfo = {
-                'entering': entering, 'leaving': leaving,
-                'pivot_row': pivot_row, 'pivot_col': pivot_col,
-                'pivot_value': pivot_val
-            }
-            self._save_state(f"Iterazione {iteration}: {entering} entra, {leaving} esce",
-                             pivot_info=pinfo, phase=2)
-
-            if verbose:
-                self.print_tableau(iteration=iteration, phase_name="Fase 2" if self.needs_phase1 else None)
-
+            for i, state in enumerate(self.history):
+                print(f"{i}: {state['description']}")
+            self.print_tableau()
+        if self.status != 'optimal':
+            return None
+        if save_figures:
+            os.makedirs(output_dir or '.', exist_ok=True)
         if plot3d and self.n == 3:
-            self._plot_3d_feasible_region(save_figures, output_dir)
+            self._plot_3d_feasible_region(save_figures, output_dir or '.')
         elif plot3d and self.n == 2:
-            self._plot_2d_feasible_region(save_figures, output_dir)
-
-        dec_vars, z = self.get_decision_variables()
-        return dec_vars, z
-
-    # ============================================================
-    #  Teoria della Dualità
-    # ============================================================
+            self._plot_2d_feasible_region(save_figures, output_dir or '.')
+        return self.get_decision_variables()
 
     def get_dual_solution(self):
         """
@@ -641,73 +271,21 @@ class SimplexSolver:
         return self.get_dual_vector_at_step(len(self.history) - 1) if self.history else None
 
     def get_dual_vector_at_step(self, step_idx):
-        """
-        Calcola il vettore dei moltiplicatori duali y all'iterazione step_idx.
-        Risolve il sistema B^T pi = c_B corrispondente alla base attiva a quello step.
-        Funziona esattamente e robustamente per qualsiasi combinazione di vincoli (<=, >=, =).
-        """
-        if not self.history or step_idx < 0 or step_idx >= len(self.history):
+        if not 0 <= step_idx < len(self.history):
             return None
-
         state = self.history[step_idx]
-        basis = state['basis']
-        m, n = self.m, self.n
+        # Phase 1 multipliers belong to the auxiliary problem, not the primal.
+        if state['phase'] == 1:
+            return None
+        return state['dual_vector'].copy()
 
-        # Se siamo in Fase 1, non siamo ancora in una base ammissibile della Fase 2
-        if state.get('phase', 2) == 1:
-            return np.zeros(m)
-
-        # Matrice A_std per la Fase 2: decisionali (A_norm) + colonne di slack/surplus
-        n_slack = len(self.slack_names)
-        A_std = np.zeros((m, n + n_slack))
-        A_std[:, :n] = self.A_norm
-        for k, (row_idx, coeff) in enumerate(self.slack_cols):
-            A_std[row_idx, n + k] = coeff
-
-        c_std = np.zeros(n + n_slack)
-        c_std[:n] = self.c_orig
-
-        # Righe con una vera variabile di base (le righe ridondanti hanno solo il segnaposto
-        # dell'artificiale e hanno moltiplicatore duale 0: il vincolo e' implicato dagli altri)
-        kept_rows = [i for i in range(m) if basis[i] < n + n_slack]
-        if not kept_rows:
-            return np.zeros(m)
-        valid_basis = [basis[i] for i in kept_rows]
-
-        B = A_std[np.ix_(kept_rows, valid_basis)]
-        cB = c_std[valid_basis]
-
-        try:
-            pi_k = np.linalg.solve(B.T, cB)
-        except np.linalg.LinAlgError:
-            try:
-                pi_k, _, _, _ = np.linalg.lstsq(B.T, cB, rcond=1e-10)
-            except Exception:
-                return np.zeros(m)
-        pi = np.zeros(m)
-        pi[kept_rows] = pi_k
-
-        # Aggiusta per l'eventuale inversione di segno di b_orig < 0
-        y = np.zeros(m)
-        for i in range(m):
-            if self.b_orig[i] < -1e-10:
-                y[i] = -pi[i]
-            else:
-                y[i] = pi[i]
-
-        # Il solver lavora sempre in forma di massimo (c negato se il problema era di min):
-        # per un problema di minimo il duale del problema originale ha segno opposto.
-        if getattr(self, 'is_min', False):
-            y = -y
-
-        y[np.abs(y) < 1e-10] = 0.0
-        return y
-
-    def get_dual_formulation(self, is_primal_min=False):
+    def get_dual_formulation(self, is_primal_min=None):
         """
         Restituisce la formulazione esatta del problema duale associato.
         Ritorna: obj_type, b_coeff, A_dual, c_bounds, y_signs
         """
+        if is_primal_min is None:
+            is_primal_min = self.is_min
         m, n = self.m, self.n
         A = self.A_orig
         b = self.b_orig
@@ -760,43 +338,32 @@ class SimplexSolver:
 
     def _is_point_feasible(self, x):
         """Verifica se un punto x rispetta tutti i vincoli originali e x >= 0."""
+        if len(x) != self.n or not np.isfinite(x).all():
+            return False
         if any(xj < -1e-7 for xj in x):
             return False
         for i in range(self.m):
             val = np.dot(self.A_orig[i], x)
             s = self.signs_orig[i]
             bi = self.b_orig[i]
-            if s == '<=' and val > bi + 1e-7:
+            scale = max(float(np.max(np.abs(self.A_orig[i]))), abs(bi)) or 1.0
+            tolerance = 1e-7 * scale
+            if s == '<=' and val > bi + tolerance:
                 return False
-            elif s == '>=' and val < bi - 1e-7:
+            elif s == '>=' and val < bi - tolerance:
                 return False
-            elif s == '=' and abs(val - bi) > 1e-7:
+            elif s == '=' and abs(val - bi) > tolerance:
                 return False
         return True
 
     def find_all_vertices(self):
         """Trova tutti i vertici ammissibili della regione del poliedro."""
-        n = self.n
-        A_all = np.vstack([self.A_orig, np.eye(n)])
-        b_all = np.hstack([self.b_orig, np.zeros(n)])
-        total_planes = len(b_all)
-        vertices = []
+        from geometry import vertices
+        return vertices(self._exact.A, self._exact.b, self.signs_orig, self.n)
 
-        for combo in combinations(range(total_planes), n):
-            A_sub = A_all[list(combo)]
-            b_sub = b_all[list(combo)]
-            try:
-                if abs(np.linalg.det(A_sub)) < 1e-10:
-                    continue
-                x = np.linalg.solve(A_sub, b_sub)
-                if self._is_point_feasible(x):
-                    x = np.maximum(x, 0.0)
-                    if not any(np.allclose(x, v, atol=1e-6) for v in vertices):
-                        vertices.append(x)
-            except np.linalg.LinAlgError:
-                continue
-
-        return np.array(vertices) if vertices else np.array([]).reshape(0, n)
+    def display_vertices(self, bounds):
+        from geometry import vertices
+        return vertices(self._exact.A, self._exact.b, self.signs_orig, self.n, bounds=bounds)
 
     # ============================================================
     #  Visualizzazione 3D
@@ -828,29 +395,12 @@ class SimplexSolver:
         plt.show()
 
     def _draw_feasible_region_3d(self, ax, alpha=0.15):
+        from geometry import draw_region
         verts = self.find_all_vertices()
-        if len(verts) >= 4:
-            try:
-                from scipy.spatial import ConvexHull
-                hull = ConvexHull(verts)
-                faces = [[verts[i] for i in simplex] for simplex in hull.simplices]
-                poly = Poly3DCollection(faces, alpha=alpha, facecolor='cyan',
-                                        edgecolor='navy', linewidth=0.5)
-                ax.add_collection3d(poly)
-                ax.scatter(verts[:, 0], verts[:, 1], verts[:, 2],
-                           c='navy', s=25, zorder=5, alpha=0.6)
-            except Exception:
-                ax.scatter(verts[:, 0], verts[:, 1], verts[:, 2],
-                           c='navy', s=25, zorder=5, alpha=0.6)
-        elif len(verts) > 0:
-            ax.scatter(verts[:, 0], verts[:, 1], verts[:, 2],
-                       c='navy', s=25, zorder=5, alpha=0.6)
-
-        if len(verts) > 0:
-            margin = 0.5
-            ax.set_xlim([0, max(verts[:, 0].max(), 0.1) + margin])
-            ax.set_ylim([0, max(verts[:, 1].max(), 0.1) + margin])
-            ax.set_zlim([0, max(verts[:, 2].max(), 0.1) + margin])
+        extent = max(float(verts.max()) * 1.3, 5) if len(verts) else 10
+        draw_region(ax, self.display_vertices([(0, extent)] * 3), alpha)
+        ax.set_xlim(0, extent); ax.set_ylim(0, extent); ax.set_zlim(0, extent)
+        ax.set_title('Regione nella finestra di visualizzazione')
 
     def _draw_simplex_path(self, ax):
         points = [s['decision_vars'][:3] for s in self.history if len(s['decision_vars']) >= 3]
@@ -863,7 +413,7 @@ class SimplexSolver:
         ax.scatter(*pts[0], c='green', s=150, marker='^', zorder=11,
                    edgecolors='darkgreen', linewidths=2, label='Start')
         ax.scatter(*pts[-1], c='gold', s=200, marker='*', zorder=11,
-                   edgecolors='darkorange', linewidths=2, label='Ottimo')
+                   edgecolors='darkorange', linewidths=2, label='Ottimo' if self.status == 'optimal' else 'Ultimo passo')
         for i, pt in enumerate(pts):
             ax.text(pt[0] + 0.1, pt[1] + 0.1, pt[2] + 0.1,
                     f"It.{i}", fontsize=9, fontweight='bold', color='red')
@@ -920,21 +470,17 @@ class SimplexSolver:
             a1, a2 = self.A_orig[i, 0], self.A_orig[i, 1]
             bi = self.b_orig[i]
             s = '≤' if self.signs_orig[i] == '<=' else ('≥' if self.signs_orig[i] == '>=' else '=')
-            if abs(a2) > 1e-10:
+            if a2 != 0:
                 y_line = (bi - a1 * x_range) / a2
                 lbl = f"{self._format_val(a1)}{self.var_names[0]}+{self._format_val(a2)}{self.var_names[1]} {s} {self._format_val(bi)}"
                 ax.plot(x_range, y_line, label=lbl, linewidth=1.5)
-            elif abs(a1) > 1e-10:
+            elif a1 != 0:
+                if a1 < 0:
+                    s = {'≤': '≥', '≥': '≤', '=': '='}[s]
                 ax.axvline(x=bi/a1, label=f"{self.var_names[0]} {s} {self._format_val(bi/a1)}", linewidth=1.5)
 
-        verts = self.find_all_vertices()
-        if len(verts) >= 3:
-            from matplotlib.patches import Polygon
-            center = np.mean(verts, axis=0)
-            angles = np.arctan2(verts[:, 1] - center[1], verts[:, 0] - center[0])
-            sorted_verts = verts[np.argsort(angles)]
-            poly = Polygon(sorted_verts, alpha=alpha, facecolor='lightblue', edgecolor='navy')
-            ax.add_patch(poly)
+        from geometry import draw_region
+        draw_region(ax, self.display_vertices([(0, max_x), (0, max_y)]), alpha)
 
         ax.set_xlim([-0.5, max_x])
         ax.set_ylim([-0.5, max_y])
@@ -947,7 +493,7 @@ class SimplexSolver:
         ax.scatter(*pts[0], c='green', s=150, marker='^', zorder=11,
                    edgecolors='darkgreen', linewidths=2, label='Start')
         ax.scatter(*pts[-1], c='gold', s=200, marker='*', zorder=11,
-                   edgecolors='darkorange', linewidths=2, label='Ottimo')
+                   edgecolors='darkorange', linewidths=2, label='Ottimo' if self.status == 'optimal' else 'Ultimo passo')
         for i, pt in enumerate(pts):
             ax.annotate(f"It.{i}", pt, textcoords="offset points",
                         xytext=(10, 10), fontsize=9, fontweight='bold', color='red')
